@@ -191,3 +191,4 @@ go/nof0-api
 nof0-api
 bin/
 cmd/importer/nof0-importer
+output/
