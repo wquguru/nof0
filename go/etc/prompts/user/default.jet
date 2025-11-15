@@ -1,0 +1,92 @@
+It has been {{.Session.MinutesElapsed}} minutes since you started trading.
+
+Below, we are providing you with a variety of state data, price data, and predictive signals so you can discover alpha. Below that is your current account information, value, performance, positions, etc.
+
+ **CRITICAL: ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: OLDEST -> NEWEST**
+
+**Timeframes note:** Unless stated otherwise in a section title, intraday series are provided at **{{.Timeframes.ShortIntervalMinutes}}-minute intervals**. If a coin uses a different interval, it is explicitly stated in that coin's section.
+
+---
+
+## CURRENT MARKET STATE FOR ALL COINS
+{{range i, coin := .Coins}}
+### ALL {{coin.Symbol}} DATA
+
+**Current Snapshot:**
+- current_price = {{coin.Current.Price}}
+- current_ema20 = {{coin.Current.EMA20}}
+- current_macd = {{coin.Current.MACD}}
+- current_rsi (7 period) = {{coin.Current.RSI7}}
+
+**Perpetual Futures Metrics:**
+- Open Interest: Latest: {{coin.Futures.OpenInterest.Latest}} | Average: {{coin.Futures.OpenInterest.Average}}
+- Funding Rate: {{coin.Futures.FundingRate}}
+
+**Intraday Series ({{.Timeframes.ShortIntervalMinutes}}-minute intervals, oldest → latest):**
+
+Mid prices: [{{join(coin.Short.Prices, ", ")}}]
+
+EMA indicators (20-period): [{{join(coin.Short.EMA20, ", ")}}]
+
+MACD indicators: [{{join(coin.Short.MACD, ", ")}}]
+
+RSI indicators (7-Period): [{{join(coin.Short.RSI7, ", ")}}]
+
+RSI indicators (14-Period): [{{join(coin.Short.RSI14, ", ")}}]
+
+**Longer-term Context ({{.Timeframes.LongIntervalHours}}-hour timeframe):**
+{{if coin.Long.EMA20}}
+20-Period EMA: [{{join(coin.Long.EMA20, ", ")}}]{{end}}{{if coin.Long.EMA50}} vs. 50-Period EMA: [{{join(coin.Long.EMA50, ", ")}}]{{end}}
+{{if coin.Long.ATR3}}
+3-Period ATR: [{{join(coin.Long.ATR3, ", ")}}]{{end}}{{if coin.Long.ATR14}} vs. 14-Period ATR: [{{join(coin.Long.ATR14, ", ")}}]{{end}}
+
+Current Volume: {{coin.Futures.VolumeCurrent}} vs. Average Volume: {{coin.Futures.VolumeAverage}}
+{{if coin.Long.MACD}}
+MACD indicators ({{.Timeframes.LongIntervalHours}}h): [{{join(coin.Long.MACD, ", ")}}]{{end}}
+{{if coin.Long.RSI14}}
+RSI indicators (14-Period, {{.Timeframes.LongIntervalHours}}h): [{{join(coin.Long.RSI14, ", ")}}]{{end}}
+
+---
+{{end}}
+
+## HERE IS YOUR ACCOUNT INFORMATION & PERFORMANCE
+
+**Performance Metrics:**
+- Current Total Return (percent): {{.Account.Performance.ReturnPct}}%
+- Sharpe Ratio: {{.Account.Performance.SharpeRatio}}
+
+**Account Status:**
+- Available Cash: {{formatCurrency(.Account.Status.CashAvailable)}}
+- **Current Account Value:** {{formatCurrency(.Account.Status.AccountValue)}}
+
+**Current Live Positions & Performance:**
+
+{{if .Positions}}
+```python
+[
+{{range i, pos := .Positions}}  {
+    'symbol': '{{pos.Symbol}}',
+    'quantity': {{pos.Quantity}},
+    'entry_price': {{pos.EntryPrice}},
+    'current_price': {{pos.CurrentPrice}},
+    'liquidation_price': {{pos.LiquidationPrice}},
+    'unrealized_pnl': {{pos.UnrealizedPnL}},
+    'leverage': {{pos.Leverage}},
+    'exit_plan': {
+      'profit_target': {{pos.ExitPlan.ProfitTarget}},
+      'stop_loss': {{pos.ExitPlan.StopLoss}},
+      'invalidation_condition': '{{pos.ExitPlan.InvalidationCondition}}'
+    },
+    'confidence': {{pos.Confidence}},
+    'risk_usd': {{pos.RiskUSD}},
+    'notional_usd': {{pos.NotionalUSD}}
+  },
+{{end}}]
+```
+{{else}}
+```python
+[]
+```
+{{end}}
+
+Based on the above data, provide your trading decision in the required JSON format.
