@@ -1,0 +1,473 @@
+@startuml Ideal Persistence Model (Database Tables)
+!theme plain
+skinparam linetype ortho
+skinparam roundcorner 5
+
+' ==============================================================================
+' Legend
+' ==============================================================================
+legend top right
+  |<size:14><b>Table Types</b></size> |
+  |<back:#E3F2FD>   </back>| Configuration Table |
+  |<back:#FFF3E0>   </back>| State Table |
+  |<back:#E8F5E9>   </back>| Event Log (Append-Only) |
+  |<back:#FCE4EC>   </back>| Snapshot Table |
+  |=====|
+  |<size:14><b>Symbols</b></size> |
+  |<<PK>>| Primary Key |
+  |<<FK>>| Foreign Key |
+  |<<UK>>| Unique Key |
+  |<<IDX>>| Index |
+endlegend
+
+' ==============================================================================
+' MODULE: manager - Trading Strategy Management
+' ==============================================================================
+package "Manager Module" #FAFAFA {
+
+    entity "trader_config" as TraderConfig <<Configuration>> #E3F2FD {
+        * id : TEXT <<PK>>
+        --
+        exchange_provider : TEXT <<IDX>>
+        market_provider : TEXT <<IDX>>
+        --
+        ** Configuration (JSONB) **
+        detail : JSONB
+        detail_checksum : INT
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of TraderConfig
+      <b>detail JSONB contains:</b>
+      - name, prompt_template, model
+      - order_style, decision_interval
+      - risk_params: RiskParameters
+      - exec_guards: ExecGuards
+      - allocation_pct, auto_start
+      - journal_enabled, journal_dir
+
+      <b>Indexes:</b>
+      idx_trader_config_providers
+        ON (exchange_provider, market_provider)
+    end note
+
+    entity "positions" as Position <<Event Log>> #E8F5E9 {
+        * id : TEXT <<PK>>
+        --
+        trader_id : TEXT <<FK>> <<IDX>>
+        symbol_id : TEXT <<FK>>
+        symbol : TEXT <<IDX>>
+        exchange_provider : TEXT
+        --
+        side : TEXT CHECK(long|short)
+        status : TEXT CHECK(open|closed)
+        --
+        ** Position Details (JSONB) **
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of Position
+      <b>detail JSONB contains:</b>
+      - quantity, entry_price
+      - notional_usd, leverage
+      - unrealized_pnl
+      - stop_loss, take_profit
+      - opened_at, closed_at
+
+      <b>Event Log Pattern:</b>
+      - Each open/close is a new row
+      - status = 'open' | 'closed'
+      - Immutable once created
+
+      <b>Indexes:</b>
+      idx_positions_trader_status
+        ON (trader_id, status)
+      idx_positions_symbol_open
+        ON (symbol) WHERE status='open'
+    end note
+
+    entity "trades" as Trade <<Event Log>> #E8F5E9 {
+        * id : TEXT <<PK>>
+        --
+        trader_id : TEXT <<FK>> <<IDX>>
+        symbol_id : TEXT <<FK>>
+        symbol : TEXT
+        exchange_provider : TEXT
+        --
+        side : TEXT CHECK(long|short)
+        --
+        ** Trade Details (JSONB) **
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of Trade
+      <b>detail JSONB contains:</b>
+      - order_type (market_ioc, limit_ioc)
+      - quantity, price, notional
+      - fee, exchange_order_id
+      - fill_price, fill_size
+      - cloid (client order id)
+
+      <b>Relationship:</b>
+      - Multiple trades can relate to
+        a single position
+
+      <b>Indexes:</b>
+      idx_trades_trader_close_ts
+        ON (trader_id, event_at DESC)
+    end note
+
+    TraderConfig "1" -- "0..*" Position : configures
+    Position "1" -- "0..*" Trade : has
+}
+
+' ==============================================================================
+' MODULE: executor/llm - LLM Execution & Decisions
+' ==============================================================================
+package "Executor/LLM Module" #FAFAFA {
+
+    entity "models" as Model <<Configuration>> #E3F2FD {
+        * id : TEXT <<PK>>
+        --
+        provider : TEXT
+        name : TEXT
+        --
+        detail : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of Model
+      <b>detail JSONB contains:</b>
+      - max_tokens, temperature
+      - api_endpoint, api_version
+      - cost_per_token
+      - capabilities
+
+      <b>Examples:</b>
+      - gpt-4-turbo
+      - claude-3-opus
+      - gemini-1.5-pro
+    end note
+
+    entity "conversation_messages" as ConversationMessage <<Event Log>> #E8F5E9 {
+        * id : BIGSERIAL <<PK>>
+        --
+        trader_id : TEXT <<FK>> <<IDX>>
+        model_id : TEXT <<FK>>
+        conversation_id : TEXT <<IDX>>
+        --
+        role : TEXT CHECK(system|user|assistant)
+        --
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of ConversationMessage
+      <b>detail JSONB contains:</b>
+      - content (message text)
+      - tokens_used
+      - cost_usd
+      - latency_ms
+
+      <b>Indexes:</b>
+      idx_conversation_messages_trader
+        ON (trader_id)
+    end note
+
+    entity "decision_cycles" as DecisionCycle <<Event Log>> #E8F5E9 {
+        * id : BIGSERIAL <<PK>>
+        --
+        trader_id : TEXT <<FK>> <<IDX>>
+        cycle_number : INT
+        --
+        error_message : TEXT
+        --
+        ** Cycle Details (JSONB) **
+        detail : JSONB
+        --
+        executed_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of DecisionCycle
+      <b>detail JSONB contains:</b>
+      - prompt_digest
+      - decisions: []Decision
+      - execution_summary
+      - validation_errors
+      - duration_ms
+      - model_id, conversation_id
+
+      <b>Event Sourcing:</b>
+      - Every decision cycle recorded
+      - Can replay to rebuild state
+      - Audit trail for analysis
+
+      <b>Indexes:</b>
+      idx_decision_cycles_trader_executed_at_desc
+        ON (trader_id, executed_at DESC)
+    end note
+
+    Model "1" -- "0..*" ConversationMessage : uses
+    TraderConfig "1" -- "0..*" DecisionCycle : executes
+    Model "1" -- "0..*" DecisionCycle : runs
+}
+
+' ==============================================================================
+' MODULE: exchange/account - Account Management
+' ==============================================================================
+package "Exchange/Account Module" #FAFAFA {
+
+    entity "accounts" as Account <<State>> #FFF3E0 {
+        * provider : TEXT <<PK>>
+        --
+        is_trader : BOOLEAN
+        --
+        detail : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of Account
+      <b>detail JSONB contains:</b>
+      - account_value, margin_summary
+      - total_margin_used
+      - total_unrealized_pnl
+      - leverage_mode (cross|isolated)
+
+      <b>provider values:</b>
+      - "hyperliquid" (exchange)
+      - "trader:<trader_id>" (per-trader view)
+    end note
+
+    entity "account_snapshots" as AccountSnapshot <<Snapshot>> #FCE4EC {
+        * id : BIGSERIAL <<PK>>
+        --
+        provider : TEXT <<FK>>
+        is_trader : BOOLEAN
+        --
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ <<UK>>
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+        --
+        UNIQUE(provider, event_at)
+    }
+
+    note right of AccountSnapshot
+      <b>detail JSONB contains:</b>
+      - snapshot of accounts.detail
+      - equity_usd, margin_used_usd
+      - available_balance_usd
+      - unrealized_pnl_usd
+
+      <b>Time-series snapshots:</b>
+      - Taken every N minutes
+      - Used for equity curves
+      - Performance analysis
+    end note
+
+    Account "1" -- "0..*" AccountSnapshot : snapshots
+}
+
+' ==============================================================================
+' MODULE: exchange/market - Market Data
+' ==============================================================================
+package "Exchange/Market Module" #FAFAFA {
+
+    entity "symbols" as Symbol <<Configuration>> #E3F2FD {
+        * id : TEXT <<PK>>
+        --
+        exchange_provider : TEXT <<UK>>
+        symbol : TEXT <<UK>>
+        --
+        base_asset : TEXT
+        quote_asset : TEXT
+        --
+        base_precision : INT
+        quote_precision : INT
+        tick_sz : DOUBLE
+        sz_decimals : INT
+        --
+        is_delisted : BOOLEAN
+        --
+        detail : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+        --
+        UNIQUE(exchange_provider, symbol)
+    }
+
+    note right of Symbol
+      <b>detail JSONB contains:</b>
+      - max_leverage
+      - only_isolated (bool)
+      - min_notional
+      - contract_type (perpetual|spot)
+
+      <b>id format:</b>
+      <exchange>/<symbol>
+      e.g., "hyperliquid/BTC"
+    end note
+
+    entity "market_metrics" as MarketMetric <<Snapshot>> #FCE4EC {
+        * id : BIGSERIAL <<PK>>
+        --
+        symbol_id : TEXT <<FK>> <<IDX>>
+        exchange_provider : TEXT
+        symbol : TEXT
+        --
+        ** Price Metrics **
+        mark_price : DOUBLE
+        mid_price : DOUBLE
+        oracle_price : DOUBLE
+        --
+        ** Derivatives **
+        funding_rate : DOUBLE
+        open_interest : DOUBLE
+        --
+        ** Volume **
+        day_volume : DOUBLE
+        day_notional_volume : DOUBLE
+        --
+        ** Changes (fractional) **
+        change_1h : DOUBLE
+        change_4h : DOUBLE
+        change_24h : DOUBLE
+        --
+        premium : DOUBLE
+        prev_day_price : DOUBLE
+        --
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ <<UK>>
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+        --
+        UNIQUE(symbol_id, event_at)
+    }
+
+    note right of MarketMetric
+      <b>detail JSONB contains:</b>
+      - Additional exchange-specific metrics
+      - Liquidation data
+      - Orderbook snapshots
+
+      <b>Indexes:</b>
+      idx_market_metrics_symbol_event_at_desc
+        ON (symbol_id, event_at DESC)
+      idx_market_metrics_provider_symbol_event_at_desc
+        ON (exchange_provider, symbol, event_at DESC)
+    end note
+
+    entity "klines" as Kline <<Event Log>> #E8F5E9 {
+        * id : BIGSERIAL <<PK>>
+        --
+        symbol_id : TEXT <<FK>> <<IDX>>
+        exchange_provider : TEXT
+        symbol : TEXT
+        --
+        interval : TEXT
+        --
+        open_time : TIMESTAMPTZ <<UK>>
+        close_time : TIMESTAMPTZ
+        --
+        open_price : DOUBLE
+        high_price : DOUBLE
+        low_price : DOUBLE
+        close_price : DOUBLE
+        --
+        volume : DOUBLE
+        --
+        detail : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+        --
+        UNIQUE(symbol_id, interval, open_time)
+    }
+
+    note right of Kline
+      <b>detail JSONB contains:</b>
+      - trades_count
+      - vwap (volume-weighted avg price)
+      - taker_buy_volume
+
+      <b>interval values:</b>
+      1m, 5m, 15m, 1h, 4h, 1d
+
+      <b>Indexes:</b>
+      idx_klines_symbol_interval_open_time_desc
+        ON (symbol_id, interval, open_time DESC)
+      idx_klines_provider_symbol_interval_open_time_desc
+        ON (exchange_provider, symbol, interval, open_time DESC)
+      idx_klines_symbol_interval_time_range
+        ON (symbol_id, interval, open_time, close_time)
+    end note
+
+    entity "price_ticks" as PriceTick <<Event Log>> #E8F5E9 {
+        * id : BIGSERIAL <<PK>>
+        --
+        symbol_id : TEXT <<FK>> <<IDX>>
+        exchange_provider : TEXT
+        symbol : TEXT
+        --
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of PriceTick
+      <b>detail JSONB contains:</b>
+      - price, quantity
+      - is_buyer_maker
+      - trade_id
+
+      <b>High-frequency data:</b>
+      - Individual price ticks
+      - Used for micro-analysis
+      - Aggregated into klines
+
+      <b>Indexes:</b>
+      idx_price_ticks_symbol_event_at_desc
+        ON (symbol, event_at DESC)
+      idx_price_ticks_provider_symbol_event_at_desc
+        ON (exchange_provider, symbol, event_at DESC)
+    end note
+
+    Symbol "1" -- "0..*" MarketMetric : metrics
+    Symbol "1" -- "0..*" Kline : klines
+    Symbol "1" -- "0..*" PriceTick : ticks
+
+    Position "*" -- "1" Symbol : references
+    Trade "*" -- "1" Symbol : references
+}
+
+' ==============================================================================
+' Cross-Module Relationships
+' ==============================================================================
+TraderConfig "1" -- "0..*" ConversationMessage : logs
+TraderConfig "1" -- "1" Account : has view
+
+@enduml

@@ -1,0 +1,327 @@
+@startuml DDD-Based System Architecture
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam packageBorderColor #666666
+skinparam packageBackgroundColor #FAFAFA
+
+' ==============================================================================
+' Legend
+' ==============================================================================
+legend top right
+  |<size:14><b>DDD Patterns</b></size> |
+  |<back:#E3F2FD>   </back>| Aggregate Root |
+  |<back:#FFF3E0>   </back>| Entity |
+  |<back:#E8F5E9>   </back>| Value Object / Domain Service |
+  |<back:#FCE4EC>   </back>| Application Service |
+  |<back:#FFF9C4>   </back>| Port (Interface) |
+  |<back:#FFE0B2>   </back>| Adapter (Implementation) |
+  |=====|
+  |<size:14><b>Architecture</b></size> |
+  | → | Dependency (uses) |
+  | ..> | Interface implementation |
+endlegend
+
+' ==============================================================================
+' External Systems
+' ==============================================================================
+package "External Systems" #EEEEEE {
+    [LLM API\n(OpenAI/Anthropic)] as LLM_EXTERNAL
+    [Exchange API\n(Hyperliquid)] as EXCHANGE_EXTERNAL
+    database "PostgreSQL" as DB_EXTERNAL
+}
+
+' ==============================================================================
+' APPLICATION LAYER
+' ==============================================================================
+package "Application Layer" #FAFAFA {
+
+    [ManagerService] <<Application Service>> #FCE4EC
+    [RiskRunner] <<Application Service>> #FCE4EC
+
+    note right of ManagerService
+      <b>Application Orchestrator</b>
+
+      Responsibilities:
+      • Trader lifecycle coordination
+      • Decision cycle scheduling
+      • Cross-aggregate orchestration
+      • Transaction boundaries
+    end note
+
+    note right of RiskRunner
+      <b>Background Service</b>
+
+      Responsibilities:
+      • Periodic risk checks
+      • Stop-loss monitoring
+      • Take-profit execution
+      • Position health checks
+    end note
+}
+
+' ==============================================================================
+' DOMAIN LAYER - Bounded Contexts
+' ==============================================================================
+
+package "Domain Layer" #FAFAFA {
+
+    ' --------------------------------------------------------------------------
+    ' Trading Context (Core Bounded Context)
+    ' --------------------------------------------------------------------------
+    package "Trading Context" #E1F5FE {
+
+        rectangle "Trader Aggregate" <<Aggregate Root>> #E3F2FD {
+            [Trader] #E3F2FD
+            [RuntimeState] #FFF3E0
+            [PerformanceMetrics] #E8F5E9
+            [CashAllocation] #E8F5E9
+            [Cooldowns] #E8F5E9
+
+            Trader *-- RuntimeState
+            RuntimeState *-- PerformanceMetrics
+            RuntimeState *-- CashAllocation
+            RuntimeState *-- Cooldowns
+        }
+
+        [TradingPosition] <<Entity>> #FFF3E0
+        [TraderConfig] <<Entity>> #E3F2FD as TradingConfig
+        [RiskParameters] <<Value Object>> #E8F5E9 as RiskParams
+        [ExecGuards] <<Value Object>> #E8F5E9 as ExecGuards
+
+        Trader --> TradingPosition : manages
+        Trader --> TradingConfig : references
+        TradingConfig *-- RiskParams
+        TradingConfig *-- ExecGuards
+
+        note right of Trader
+          <b>Aggregate Root</b>
+
+          <b>Aggregate Boundary:</b>
+          • RuntimeState (state)
+          • PerformanceMetrics (metrics)
+          • CashAllocation (allocation)
+          • Cooldowns (map)
+
+          <b>Invariants Protected:</b>
+          • State transitions
+          • Position limits
+          • Risk thresholds
+          • Cooldown enforcement
+        end note
+    }
+
+    ' --------------------------------------------------------------------------
+    ' Decision Context
+    ' --------------------------------------------------------------------------
+    package "Decision Context" #F1F8E9 {
+
+        [Executor] <<Domain Service>> #E8F5E9
+        [Decision] <<Value Object>> #E8F5E9
+        [Context] <<DTO>> #FCE4EC
+        [Validator] <<Domain Service>> #E8F5E9
+        [PromptRenderer] <<Domain Service>> #E8F5E9 as Renderer
+
+        Executor --> Decision : produces
+        Executor --> Context : consumes
+        Executor --> Validator : validates with
+        Executor --> Renderer : uses
+
+        note right of Executor
+          <b>Decision Engine</b>
+
+          Responsibilities:
+          • Build context from aggregates
+          • Render prompts
+          • Call LLM
+          • Validate decisions
+          • Enforce business rules
+        end note
+    }
+
+    ' --------------------------------------------------------------------------
+    ' Market Context
+    ' --------------------------------------------------------------------------
+    package "Market Context" #FFF3E0 {
+
+        [Symbol] <<Value Object>> #E8F5E9
+        [Snapshot] <<Value Object>> #E8F5E9
+        [AssetMeta] <<Value Object>> #E8F5E9
+
+        note right of Symbol
+          <b>Market Data Domain</b>
+
+          Value Objects:
+          • Symbol (immutable)
+          • Snapshot (price, indicators)
+          • AssetMeta (leverage, precision)
+        end note
+    }
+
+    ' --------------------------------------------------------------------------
+    ' Event Domain
+    ' --------------------------------------------------------------------------
+    package "Event Domain" #E8EAF6 {
+
+        [DecisionCycle] <<Entity>> #FFF3E0
+        [Trade] <<Entity>> #FFF3E0
+
+        note right of DecisionCycle
+          <b>Event Sourcing</b>
+
+          Append-only event log:
+          • Every decision recorded
+          • Enables replay
+          • Audit trail
+          • Analysis support
+        end note
+    }
+}
+
+' ==============================================================================
+' INFRASTRUCTURE LAYER - Ports & Adapters (Hexagonal Architecture)
+' ==============================================================================
+
+package "Infrastructure Layer" #FAFAFA {
+
+    ' --------------------------------------------------------------------------
+    ' Ports (Interfaces)
+    ' --------------------------------------------------------------------------
+    package "Ports" #FFF9C4 {
+
+        interface "IExchangeProvider" <<Port>> as IExchange {
+            + GetAccount()
+            + GetPositions()
+            + PlaceOrder()
+            + ClosePosition()
+            + SetLeverage()
+        }
+
+        interface "IMarketProvider" <<Port>> as IMarket {
+            + GetSnapshot()
+            + BatchSnapshot()
+            + GetSymbols()
+            + GetKlines()
+        }
+
+        interface "ILLMClient" <<Port>> as ILLM {
+            + Call()
+            + StreamCall()
+        }
+
+        interface "IRepository" <<Port>> as IRepo {
+            + SaveTraderState()
+            + LoadTraderState()
+            + RecordDecisionCycle()
+            + RecordTrade()
+        }
+
+        note right of IExchange
+          <b>Ports (Interfaces)</b>
+
+          Define contracts between
+          domain and infrastructure.
+
+          Domain depends on ports,
+          not implementations.
+        end note
+    }
+
+    ' --------------------------------------------------------------------------
+    ' Adapters (Implementations)
+    ' --------------------------------------------------------------------------
+    package "Adapters" #FFE0B2 {
+
+        [HyperliquidExchange] <<Adapter>> #FFE0B2 as HLExchange
+        [HyperliquidMarket] <<Adapter>> #FFE0B2 as HLMarket
+        [LLMClient] <<Adapter>> #FFE0B2
+        [PostgresRepository] <<Adapter>> #FFE0B2 as PGRepo
+
+        HLExchange ..|> IExchange : implements
+        HLMarket ..|> IMarket : implements
+        LLMClient ..|> ILLM : implements
+        PGRepo ..|> IRepo : implements
+
+        note right of HLExchange
+          <b>Adapters (Implementations)</b>
+
+          Concrete implementations
+          of ports for external systems.
+
+          Easily swappable without
+          affecting domain logic.
+        end note
+    }
+}
+
+' ==============================================================================
+' DEPENDENCIES - Hexagonal Architecture Flow
+' ==============================================================================
+
+' Application Layer -> Domain Layer
+ManagerService --> Trader : orchestrates
+ManagerService --> Executor : calls
+RiskRunner --> Trader : monitors
+
+' Domain Layer -> Ports (Dependency Inversion)
+Trader --> IExchange : uses
+Trader --> IMarket : uses
+Trader --> IRepo : persists via
+Executor --> ILLM : calls
+
+' Context Building
+Trader --> Context : builds
+Context --> Snapshot : includes
+Context --> TradingPosition : includes
+
+' Decision Flow
+Executor --> Decision : produces
+Trader --> Decision : executes
+
+' Event Recording
+Trader --> DecisionCycle : records
+Trader --> Trade : records
+
+' Adapters -> External Systems
+HLExchange --> EXCHANGE_EXTERNAL : HTTP/WebSocket
+HLMarket --> EXCHANGE_EXTERNAL : HTTP
+LLMClient --> LLM_EXTERNAL : HTTP
+PGRepo --> DB_EXTERNAL : SQL
+
+' ==============================================================================
+' ARCHITECTURE NOTES
+' ==============================================================================
+
+note as N1
+  <b><size:16>Architecture Principles</size></b>
+
+  <b>1. Domain-Driven Design (DDD)</b>
+  • Trader is the Aggregate Root
+  • Clear aggregate boundaries protect invariants
+  • Bounded contexts separate concerns
+  • Value objects are immutable
+
+  <b>2. Hexagonal Architecture (Ports & Adapters)</b>
+  • Domain core is independent
+  • Ports define contracts (interfaces)
+  • Adapters implement external integrations
+  • Testability through mocking ports
+
+  <b>3. Dependency Inversion</b>
+  • Domain depends on abstractions (ports)
+  • Infrastructure implements abstractions
+  • Domain layer has no external dependencies
+
+  <b>4. Event Sourcing (Partial)</b>
+  • DecisionCycle: append-only event log
+  • Trade: immutable trade records
+  • Enables replay, audit, and analysis
+
+  <b>5. Layered Architecture</b>
+  • Application: orchestration, transactions
+  • Domain: business logic, invariants
+  • Infrastructure: external integrations
+end note
+
+@enduml

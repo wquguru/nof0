@@ -1,0 +1,511 @@
+@startuml Enhanced Entity Lifecycle State Machines
+!theme plain
+skinparam state {
+    BackgroundColor<<initial>> #E8F5E9
+    BackgroundColor<<active>> #FFF3E0
+    BackgroundColor<<terminal>> #FCE4EC
+    BackgroundColor<<error>> #FFEBEE
+}
+
+title Enhanced Entity Lifecycle State Machines
+
+' ==============================================================================
+' Trader Lifecycle
+' ==============================================================================
+state "Trader Lifecycle" as TraderLifecycle {
+    [*] --> Registered : RegisterTrader(config)
+
+    Registered <<initial>> : <b>Entry Actions:</b>
+    Registered : • Load TraderConfig from DB
+    Registered : • Hydrate RuntimeState (if exists)
+    Registered : • Resolve providers (exchange, market, executor)
+    Registered : • Initialize dependencies
+
+    state choice1 <<choice>>
+    Registered --> choice1 : Initialization complete
+
+    choice1 --> Stopped : config.AutoStart = false\nOR no prior state
+    choice1 --> Running : config.AutoStart = true\nOR hydrated.shouldAutoStart = true
+
+    Stopped <<terminal>> : <b>Entry Actions:</b>
+    Stopped : • State = Stopped
+    Stopped : • UpdatedAt = now()
+    Stopped : • Stop all timers
+    Stopped : <b>Invariants:</b>
+    Stopped : • No decision cycles
+    Stopped : • No position operations
+
+    Stopped --> Running : Start()\n[manual trigger]
+
+    Running <<active>> : <b>Entry Actions:</b>
+    Running : • State = Running
+    Running : • UpdatedAt = now()
+    Running : • Reset PauseUntil
+    Running : <b>Behaviors:</b>
+    Running : • do / ShouldMakeDecision()
+    Running : • do / Execute decision cycle
+    Running : • do / Update performance
+    Running : <b>Exit Actions:</b>
+    Running : • PersistRuntimeState()
+
+    state fork1 <<fork>>
+    Running --> fork1
+
+    fork1 --> Paused : Pause()\n[manual trigger]
+    fork1 --> SharpeGated : SharpeRatio < threshold\n[automatic trigger]
+    fork1 --> Stopped : Stop()\n[manual trigger]
+
+    Paused <<active>> : <b>Entry Actions:</b>
+    Paused : • State = Paused
+    Paused : • UpdatedAt = now()
+    Paused : • PersistRuntimeState()
+    Paused : <b>Invariants:</b>
+    Paused : • No new decision cycles
+    Paused : • Existing positions still monitored
+
+    Paused --> Running : Resume()\n[manual trigger]
+    Paused --> Stopped : Stop()\n[manual trigger]
+
+    SharpeGated <<active>> : <b>Entry Actions:</b>
+    SharpeGated : • PauseUntil = now() + PauseDurationOnBreach
+    SharpeGated : • Log Sharpe breach event
+    SharpeGated : • PersistRuntimeState()
+    SharpeGated : <b>Waiting for:</b>
+    SharpeGated : • now() >= PauseUntil
+    SharpeGated : • SharpeRatio >= threshold
+
+    state choice2 <<choice>>
+    SharpeGated --> choice2 : Check conditions
+
+    choice2 --> Running : now() >= PauseUntil AND\nSharpeRatio >= threshold
+    choice2 --> SharpeGated : Still gated
+    choice2 --> Stopped : Stop()\n[manual override]
+
+    Running --> [*] : UnregisterTrader()
+    Paused --> [*] : UnregisterTrader()
+    Stopped --> [*] : UnregisterTrader()
+    SharpeGated --> [*] : UnregisterTrader()
+}
+
+note right of TraderLifecycle
+  <b>State Persistence:</b>
+  trader_runtime_state table
+
+  <b>Key Decisions:</b>
+  • Decision cycles only run in Running state
+  • SharpeGated is automatic recovery mechanism
+  • Paused allows manual intervention without stopping
+
+  <b>Concurrency:</b>
+  • State changes are synchronized (mutex)
+  • Only one state transition at a time
+end note
+
+' ==============================================================================
+' Position Lifecycle
+' ==============================================================================
+state "Position Lifecycle" as PositionLifecycle {
+    [*] --> Validating : Decision(open_long/short)
+
+    Validating <<initial>> : <b>Validation Checks:</b>
+    Validating : • Schema validation (JSON)
+    Validating : • Logical validation (business rules)
+    Validating : • Risk guards validation
+    Validating : • Cooldown check
+    Validating : • Position limit check
+    Validating : • Margin check
+
+    state choice3 <<choice>>
+    Validating --> choice3
+
+    choice3 --> PlacingOrder : All validations passed
+    choice3 --> [*] : Validation failed\n[reject decision]
+
+    PlacingOrder <<active>> : <b>Actions:</b>
+    PlacingOrder : • Resolve leverage
+    PlacingOrder : • Calculate quantity
+    PlacingOrder : • Format price/size
+    PlacingOrder : • Generate CLOID
+    PlacingOrder : • Submit order to exchange
+
+    state choice4 <<choice>>
+    PlacingOrder --> choice4 : Order response
+
+    choice4 --> Open : Order filled
+    choice4 --> [*] : Order rejected/cancelled\n[log error]
+
+    Open <<active>> : <b>Entry Actions:</b>
+    Open : • Create Position entity
+    Open : • Status = Open
+    Open : • Insert to positions table
+    Open : • Insert to trades table
+    Open : <b>Monitoring:</b>
+    Open : • Track unrealized PnL
+    Open : • Monitor SL/TP conditions
+    Open : • Update mark price
+    Open : <b>Exit Actions:</b>
+    Open : • Calculate final PnL
+
+    state fork2 <<fork>>
+    Open --> fork2
+
+    fork2 --> ClosingManual : Decision(close_*)\n[manual close]
+    fork2 --> ClosingTriggered : SL/TP triggered\n[automatic close]
+
+    ClosingManual <<active>> : <b>Actions:</b>
+    ClosingManual : • Cancel resting orders
+    ClosingManual : • Get current market price
+    ClosingManual : • Submit close order (market/IOC)
+
+    ClosingTriggered <<active>> : <b>Actions:</b>
+    ClosingTriggered : • Triggered by exchange
+    ClosingTriggered : • Or detected by monitor
+    ClosingTriggered : • Submit close order
+
+    state join1 <<join>>
+    ClosingManual --> join1
+    ClosingTriggered --> join1
+
+    join1 --> Closed : Order filled
+
+    Closed <<terminal>> : <b>Entry Actions:</b>
+    Closed : • Status = Closed
+    Closed : • ClosedAt = now()
+    Closed : • Update positions table
+    Closed : • Insert trade record
+    Closed : • Set cooldown: Cooldown[symbol] = now()
+    Closed : • Insert to trader_symbol_cooldowns
+    Closed : • Update PerformanceMetrics
+    Closed : • PersistRuntimeState()
+
+    Closed --> [*]
+}
+
+note right of PositionLifecycle
+  <b>Simplified Model:</b>
+  No more virtual positions!
+  Each position maps directly to
+  exchange account position.
+
+  <b>Event Sourcing:</b>
+  • positions table is event log
+  • Each state change = new row
+  • trades table logs all executions
+
+  <b>Cooldown Mechanism:</b>
+  • Starts immediately after close
+  • Duration from ExecGuards.CooldownAfterClose
+  • Prevents rapid open/close cycles
+end note
+
+' ==============================================================================
+' Decision Lifecycle
+' ==============================================================================
+state "Decision Lifecycle" as DecisionLifecycle {
+    [*] --> ContextBuilding : Decision cycle triggered\n[ShouldMakeDecision() = true]
+
+    ContextBuilding <<initial>> : <b>Data Collection:</b>
+    ContextBuilding : • Fetch account state from exchange
+    ContextBuilding : • Fetch open positions
+    ContextBuilding : • Fetch market snapshots
+    ContextBuilding : • Select candidate symbols
+    ContextBuilding : • Load performance metrics
+    ContextBuilding : • Load cooldowns
+    ContextBuilding : <b>Guard Injection:</b>
+    ContextBuilding : • Inject ExecGuards into Context
+    ContextBuilding : • Apply conditional enablement
+
+    ContextBuilding --> PromptRendering : Context ready
+
+    PromptRendering <<active>> : <b>Actions:</b>
+    PromptRendering : • Load template file
+    PromptRendering : • Inject context variables
+    PromptRendering : • Render final prompt
+    PromptRendering : • Calculate prompt digest (hash)
+
+    PromptRendering --> LLMCall : Prompt rendered
+
+    LLMCall <<active>> : <b>Actions:</b>
+    LLMCall : • Call LLM API (with timeout)
+    LLMCall : • Parse structured output
+    LLMCall : • Record latency, tokens, cost
+
+    state choice5 <<choice>>
+    LLMCall --> choice5
+
+    choice5 --> SchemaValidation : Response received
+    choice5 --> Failed : API error/timeout
+
+    SchemaValidation <<active>> : <b>Validation:</b>
+    SchemaValidation : • Validate against JSON schema
+    SchemaValidation : • Check required fields
+    SchemaValidation : • Check field types
+
+    state choice6 <<choice>>
+    SchemaValidation --> choice6
+
+    choice6 --> LogicalValidation : Schema valid OR\nFailOnInvalid=false
+    choice6 --> Failed : Schema invalid AND\nFailOnInvalid=true
+
+    LogicalValidation <<active>> : <b>Business Rules:</b>
+    LogicalValidation : • ValidateDecisions()
+    LogicalValidation : • Check position limits
+    LogicalValidation : • Check margin usage
+    LogicalValidation : • Check liquidity (if enabled)
+    LogicalValidation : • Check value bands (if enabled)
+    LogicalValidation : • Check cooldowns (if enabled)
+    LogicalValidation : • Check leverage limits
+
+    state choice7 <<choice>>
+    LogicalValidation --> choice7
+
+    choice7 --> Ready : All checks passed
+    choice7 --> Failed : Validation failed
+
+    Ready <<active>> : <b>Entry Actions:</b>
+    Ready : • Reset failure counter for symbol
+    Ready : • Mark decision as validated
+    Ready : <b>Decision ready for execution</b>
+
+    Ready --> Executing : Manager.ExecuteDecision()
+
+    Executing <<active>> : <b>Execution Strategy:</b>
+    Executing : • Sort decisions (close first)
+    Executing : • Cap new opens by remaining slots
+    Executing : • Execute each decision sequentially
+    Executing : • Collect execution results
+
+    Executing --> Persisted : All executed
+
+    Persisted <<terminal>> : <b>Entry Actions:</b>
+    Persisted : • Insert to decision_cycles table
+    Persisted : • Insert to conversation_messages
+    Persisted : • Update PerformanceMetrics
+    Persisted : • PersistRuntimeState()
+    Persisted : • Record LastDecisionAt = now()
+
+    Persisted --> [*]
+
+    Failed <<error>> : <b>Entry Actions:</b>
+    Failed : • Increment failure counter
+    Failed : • Log error with context
+    Failed : • Insert to decision_cycles\n  (with error_message)
+    Failed : <b>Alert if:</b>
+    Failed : • Failure count >= 3
+
+    Failed --> [*]
+}
+
+note right of DecisionLifecycle
+  <b>Validation Layers:</b>
+  1. Schema: JSON structure
+  2. Logical: Business rules
+  3. Risk: Guards and limits
+
+  <b>Failure Tracking:</b>
+  • Per-symbol failure counter
+  • Alert after 3 consecutive failures
+  • Reset on successful decision
+
+  <b>Event Logging:</b>
+  • All cycles logged to decision_cycles
+  • Includes both success and failure
+  • Used for replay and analysis
+end note
+
+' ==============================================================================
+' DecisionCycle Entity Lifecycle
+' ==============================================================================
+state "DecisionCycle Entity Lifecycle" as DecisionCycleEntity {
+    [*] --> Creating : Decision execution started
+
+    Creating <<initial>> : <b>Actions:</b>
+    Creating : • Generate cycle_number
+    Creating : • Attach trader_id
+    Creating : • Record executed_at timestamp
+
+    state choice8 <<choice>>
+    Creating --> choice8 : Execution completed
+
+    choice8 --> Success : No errors
+    choice8 --> Error : error_message != null
+
+    Success <<terminal>> : <b>Entry Actions:</b>
+    Success : • error_message = null
+    Success : • detail contains:
+    Success :   - prompt_digest
+    Success :   - decisions JSON
+    Success :   - execution_summary
+    Success :   - duration_ms
+    Success : • Insert to decision_cycles table
+
+    Error <<error>> : <b>Entry Actions:</b>
+    Error : • error_message = <error text>
+    Error : • detail contains:
+    Error :   - error_stack
+    Error :   - validation_errors
+    Error :   - partial_context
+    Error : • Insert to decision_cycles table
+
+    Success --> [*]
+    Error --> [*]
+}
+
+note right of DecisionCycleEntity
+  <b>Event Sourcing:</b>
+  Every decision cycle is recorded,
+  regardless of success or failure.
+
+  <b>Replay Capability:</b>
+  Can reconstruct trader state
+  from decision_cycles history.
+
+  <b>Analysis:</b>
+  • Success rate per trader
+  • Error patterns
+  • Performance trends
+end note
+
+' ==============================================================================
+' Configuration Lifecycle
+' ==============================================================================
+state "Configuration Lifecycle" as ConfigLifecycle {
+    [*] --> Loading : System startup\nOR file change detected
+
+    Loading <<initial>> : <b>Actions:</b>
+    Loading : • Read YAML file
+    Loading : • Parse configuration
+    Loading : • Expand env variables
+
+    state choice9 <<choice>>
+    Loading --> choice9
+
+    choice9 --> Validating : Parsed successfully
+    choice9 --> [*] : Parse error\n[log and skip]
+
+    Validating <<active>> : <b>Validation:</b>
+    Validating : • Validate YAML schema
+    Validating : • Check required fields
+    Validating : • Validate field ranges
+    Validating : • Validate provider references
+    Validating : • Validate intervals/durations
+
+    state choice10 <<choice>>
+    Validating --> choice10
+
+    choice10 --> Active : Valid
+    choice10 --> [*] : Invalid\n[log and skip]
+
+    Active <<active>> : <b>Entry Actions:</b>
+    Active : • Calculate detail_checksum
+    Active : • Persist to trader_config table
+    Active : • Set Version = previous + 1 (if update)
+    Active : <b>In Use:</b>
+    Active : • Configuration active
+    Active : • Traders reference this config
+
+    Active --> Updating : Config file changed\nAND checksum differs
+    Active --> [*] : System shutdown\nOR UnregisterTrader()
+
+    Updating <<active>> : <b>Actions:</b>
+    Updating : • Detect changes via checksum
+    Updating : • Parse new config
+    Updating : • Validate new config
+    Updating : • Compare with current
+
+    state choice11 <<choice>>
+    Updating --> choice11
+
+    choice11 --> Active : Valid, apply changes,\nincrement Version,\ntrigger trader restart (if needed)
+    choice11 --> Active : Invalid, keep current,\nlog warning
+
+    note right of Updating
+      <b>Hot Reload:</b>
+      • Watch for file changes
+      • Validate before applying
+      • Increment version on success
+      • May trigger trader restart
+        depending on changed fields
+    end note
+}
+
+note right of ConfigLifecycle
+  <b>Checksum-based Change Detection:</b>
+  • detail_checksum = hash(JSONB)
+  • Only reload if checksum differs
+  • Prevents unnecessary restarts
+
+  <b>Versioning:</b>
+  • Version incremented on update
+  • Traders track config version
+  • Can detect config drift
+
+  <b>Zero-downtime Update:</b>
+  • Some changes can be hot-reloaded
+  • Others require trader restart
+end note
+
+' ==============================================================================
+' Cooldown Lifecycle
+' ==============================================================================
+state "Cooldown Lifecycle" as CooldownLifecycle {
+    [*] --> Inactive : Symbol not in cooldown
+
+    Inactive <<initial>> : <b>State:</b>
+    Inactive : • Cooldown[symbol] not set
+    Inactive : • Symbol can be traded
+
+    Inactive --> Active : Position closed
+
+    Active <<active>> : <b>Entry Actions:</b>
+    Active : • Cooldown[symbol] = now()
+    Active : • Until = now() + CooldownAfterClose
+    Active : • UpsertCooldown to DB:
+    Active :   - trader_id
+    Active :   - symbol
+    Active :   - until
+    Active :   - detail.reason = "position_closed"
+    Active : <b>Effect:</b>
+    Active : • Block new open decisions for symbol
+
+    state check_timer <<choice>>
+    Active --> check_timer : Decision cycle
+
+    check_timer --> CheckExpiry : Time to check
+
+    CheckExpiry <<active>> : <b>Condition Check:</b>
+    CheckExpiry : • Is now() >= Until ?
+
+    state choice12 <<choice>>
+    CheckExpiry --> choice12
+
+    choice12 --> Expired : Cooldown elapsed
+    choice12 --> Active : Still in cooldown,\nblock decision,\nlog warning
+
+    Expired <<terminal>> : <b>Entry Actions:</b>
+    Expired : • Remove from Cooldown map
+    Expired : • Delete from DB (optional)\n  or mark as expired
+    Expired : • Log cooldown expiration
+    Expired : <b>Effect:</b>
+    Expired : • Symbol can be traded again
+
+    Expired --> [*]
+}
+
+note right of CooldownLifecycle
+  <b>Purpose:</b>
+  • Prevent rapid open/close cycles
+  • Reduce overtrading
+  • Allow market to stabilize
+
+  <b>Storage:</b>
+  • In-memory: Trader.RuntimeState.Cooldowns
+  • Persistent: trader_symbol_cooldowns table
+
+  <b>Configurable:</b>
+  • ExecGuards.CooldownAfterClose
+  • Can be different per trader
+  • Can be disabled (duration = 0)
+end note
+
+@enduml

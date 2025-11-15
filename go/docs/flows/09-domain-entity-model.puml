@@ -1,0 +1,419 @@
+@startuml Domain Entity Model
+!theme plain
+skinparam linetype ortho
+
+' Legend
+legend right
+  |Color| Type |
+  |<#E3F2FD>| Configuration Entity |
+  |<#FFF3E0>| Runtime State Entity |
+  |<#E8F5E9>| Business Event Entity |
+  |<#F3E5F5>| Read Model / View |
+endlegend
+
+package "Configuration Domain" #E3F2FD {
+    entity "TraderConfig" as TraderConfig {
+        * id : TEXT <<PK>>
+        --
+        exchange_provider : TEXT
+        market_provider : TEXT
+        detail : JSONB
+        detail_checksum : TEXT
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of TraderConfig
+        **Detail JSONB contains:**
+        - name, prompt_template
+        - order_style, model
+        - decision_interval
+        - risk_params (RiskParameters)
+        - exec_guards (ExecGuards)
+        - allocation_pct
+        - auto_start, journal_enabled
+    end note
+
+    entity "RiskParameters" as RiskParams {
+        max_positions : INT
+        max_position_size_usd : FLOAT
+        max_margin_usage_pct : FLOAT
+        major_coin_leverage : INT
+        altcoin_leverage : INT
+        min_risk_reward_ratio : FLOAT
+        min_confidence : INT
+        stop_loss_enabled : BOOL
+        take_profit_enabled : BOOL
+    }
+
+    entity "ExecGuards" as ExecGuards {
+        max_new_positions_per_cycle : INT
+        liquidity_threshold_usd : FLOAT
+        btceth_min/max_equity_multiple : FLOAT
+        alt_min/max_equity_multiple : FLOAT
+        cooldown_after_close : DURATION
+        enable_*_guard : BOOL
+        sharpe_pause_threshold : FLOAT
+        pause_duration_on_breach : DURATION
+    }
+
+    TraderConfig *-- RiskParams : contains
+    TraderConfig *-- ExecGuards : contains
+}
+
+package "Runtime State Domain" #FFF3E0 {
+    entity "Trader (Runtime)" as Trader {
+        * ID : STRING <<PK>>
+        --
+        Name : STRING
+        State : TraderState
+        ConfigVersion : INT64
+        --
+        LastDecisionAt : TIME
+        DecisionInterval : DURATION
+        PauseUntil : TIME
+        --
+        Positions : MAP<Symbol, Position>
+        Cooldown : MAP<Symbol, TIME>
+        Performance : PerformanceMetrics
+        ResourceAlloc : CashAllocation
+        --
+        CreatedAt : TIME
+        UpdatedAt : TIME
+    }
+
+    enum "TraderState" as TraderState {
+        Running
+        Paused
+        Stopped
+        Error
+    }
+
+    entity "Position (Virtual)" as Position {
+        Symbol : STRING
+        Side : STRING
+        Quantity : FLOAT
+        NotionalUSD : FLOAT
+        EntryPrice : FLOAT
+        Leverage : INT
+        OpenedAt : TIME
+        UpdatedAt : TIME
+    }
+
+    entity "PerformanceMetrics" as PerfMetrics {
+        TotalPnLUSD : FLOAT
+        TotalPnLPct : FLOAT
+        SharpeRatio : FLOAT
+        WinRate : FLOAT
+        TotalTrades : INT
+        WinningTrades : INT
+        LosingTrades : INT
+        AvgWinUSD : FLOAT
+        AvgLossUSD : FLOAT
+        MaxDrawdownPct : FLOAT
+        CurrentDrawdownPct : FLOAT
+        UpdatedAt : TIME
+    }
+
+    entity "CashAllocation" as CashAlloc {
+        AllocatedEquityUSD : FLOAT
+        AllocationPct : FLOAT
+        CurrentEquityUSD : FLOAT
+        AvailableBalanceUSD : FLOAT
+        MarginUsedUSD : FLOAT
+        UnrealizedPnLUSD : FLOAT
+    }
+
+    Trader::State --> TraderState
+    Trader *-- "0..*" Position : manages
+    Trader *-- PerfMetrics : tracks
+    Trader *-- CashAlloc : allocates
+}
+
+package "Persistence Domain" #E8F5E9 {
+    entity "trader_runtime_state" as RuntimeStateDB {
+        * trader_id : TEXT <<PK>>
+        --
+        state : TEXT
+        last_decision_at : TIMESTAMPTZ
+        pause_until : TIMESTAMPTZ
+        performance : JSONB
+        resource_alloc : JSONB
+        positions : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    entity "trader_symbol_cooldowns" as CooldownDB {
+        * id : BIGSERIAL <<PK>>
+        --
+        trader_id : TEXT
+        symbol : TEXT
+        until : TIMESTAMPTZ
+        detail : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+        --
+        UNIQUE(trader_id, symbol)
+    }
+
+    entity "positions" as PositionDB {
+        * id : BIGSERIAL <<PK>>
+        --
+        trader_id : TEXT
+        exchange_provider : TEXT
+        symbol : TEXT
+        side : TEXT
+        quantity : FLOAT
+        entry_price : FLOAT
+        notional_usd : FLOAT
+        leverage : INT
+        unrealized_pnl : FLOAT
+        is_closed : BOOL
+        closed_at : TIMESTAMPTZ
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    entity "trades" as TradeDB {
+        * id : BIGSERIAL <<PK>>
+        --
+        trader_id : TEXT
+        position_id : BIGINT
+        symbol : TEXT
+        side : TEXT
+        order_type : TEXT
+        quantity : FLOAT
+        price : FLOAT
+        notional : FLOAT
+        fee : FLOAT
+        exchange_order_id : TEXT
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+    }
+
+    Trader ..> RuntimeStateDB : persists to
+    Trader ..> CooldownDB : persists cooldowns to
+    Position ..> PositionDB : logged as
+    PositionDB "1" -- "0..*" TradeDB : has trades
+}
+
+package "Decision Domain" #E8F5E9 {
+    entity "decision_cycles" as DecisionCycle {
+        * id : BIGSERIAL <<PK>>
+        --
+        trader_id : TEXT
+        model_id : TEXT
+        conversation_id : TEXT
+        prompt_digest : TEXT
+        decisions : JSONB
+        execution_summary : JSONB
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+    }
+
+    entity "Decision (Output)" as Decision {
+        Symbol : STRING
+        Action : STRING
+        Leverage : INT
+        PositionSizeUSD : FLOAT
+        EntryPrice : FLOAT
+        StopLoss : FLOAT
+        TakeProfit : FLOAT
+        Confidence : INT
+        RiskUSD : FLOAT
+        Reasoning : STRING
+    }
+
+    entity "FullDecision" as FullDecision {
+        UserPrompt : STRING
+        CoTTrace : STRING
+        Decisions : []Decision
+        Timestamp : TIME
+    }
+
+    entity "conversation_messages" as ConvMsg {
+        * id : BIGSERIAL <<PK>>
+        --
+        trader_id : TEXT
+        model_id : TEXT
+        conversation_id : TEXT
+        role : TEXT
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+    }
+
+    FullDecision *-- "1..*" Decision : contains
+    DecisionCycle ..> Decision : stores
+    Trader ..> DecisionCycle : generates
+    Trader ..> ConvMsg : logs conversations
+}
+
+package "Market Data Domain" #E8F5E9 {
+    entity "symbols" as Symbol {
+        * id : TEXT <<PK>>
+        --
+        exchange_provider : TEXT
+        symbol : TEXT
+        base_asset : TEXT
+        quote_asset : TEXT
+        base_precision : INT
+        quote_precision : INT
+        tick_sz : FLOAT
+        sz_decimals : INT
+        is_delisted : BOOL
+        detail : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+        --
+        UNIQUE(exchange_provider, symbol)
+    }
+
+    entity "market_metrics" as MarketMetrics {
+        * id : BIGSERIAL <<PK>>
+        --
+        symbol_id : TEXT <<FK>>
+        exchange_provider : TEXT
+        symbol : TEXT
+        mark_price : FLOAT
+        funding_rate : FLOAT
+        open_interest : FLOAT
+        day_volume : FLOAT
+        change_1h/4h/24h : FLOAT
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+        --
+        UNIQUE(symbol_id, event_at)
+    }
+
+    entity "klines" as Kline {
+        * id : BIGSERIAL <<PK>>
+        --
+        symbol_id : TEXT <<FK>>
+        exchange_provider : TEXT
+        symbol : TEXT
+        interval : TEXT
+        open_time : TIMESTAMPTZ
+        close_time : TIMESTAMPTZ
+        open/high/low/close_price : FLOAT
+        volume : FLOAT
+        detail : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        --
+        UNIQUE(symbol_id, interval, open_time)
+    }
+
+    entity "price_ticks" as PriceTick {
+        * id : BIGSERIAL <<PK>>
+        --
+        symbol_id : TEXT <<FK>>
+        exchange_provider : TEXT
+        symbol : TEXT
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+    }
+
+    Symbol "1" -- "0..*" MarketMetrics
+    Symbol "1" -- "0..*" Kline
+    Symbol "1" -- "0..*" PriceTick
+}
+
+package "Account Domain" #E8F5E9 {
+    entity "accounts" as Account {
+        * provider : TEXT <<PK>>
+        --
+        is_trader : BOOL
+        detail : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    entity "account_snapshots" as AcctSnapshot {
+        * id : BIGSERIAL <<PK>>
+        --
+        provider : TEXT
+        is_trader : BOOL
+        detail : JSONB
+        --
+        event_at : TIMESTAMPTZ
+        created_at : TIMESTAMPTZ
+        --
+        UNIQUE(provider, event_at)
+    }
+
+    Account "1" -- "0..*" AcctSnapshot
+}
+
+package "Executor Context (View)" #F3E5F5 {
+    entity "Context" as ExecContext {
+        CurrentTime : STRING
+        RuntimeMinutes : INT
+        CallCount : INT
+        --
+        Account : AccountInfo
+        Positions : []PositionInfo
+        CandidateCoins : []CandidateCoin
+        MarketDataMap : MAP<Symbol, Snapshot>
+        Performance : PerformanceView
+        AssetMeta : MAP<Symbol, AssetMeta>
+        --
+        ** Guards (from ExecGuards) **
+        MaxMarginUsagePct : FLOAT
+        LiquidityThresholdUSD : FLOAT
+        BTCETHPositionValue Min/Max : FLOAT
+        AltPositionValue Min/Max : FLOAT
+        CooldownAfterClose : DURATION
+        RecentlyClosed : MAP<Symbol, TIME>
+    }
+
+    entity "AccountInfo" as AccountInfo {
+        TotalEquity : FLOAT
+        AvailableBalance : FLOAT
+        TotalPnL : FLOAT
+        MarginUsed : FLOAT
+        PositionCount : INT
+    }
+
+    entity "PositionInfo" as PositionInfo {
+        Symbol : STRING
+        Side : STRING
+        EntryPrice : FLOAT
+        MarkPrice : FLOAT
+        Quantity : FLOAT
+        Leverage : INT
+        UnrealizedPnL : FLOAT
+        LiquidationPrice : FLOAT
+    }
+
+    ExecContext *-- AccountInfo
+    ExecContext *-- "0..*" PositionInfo
+}
+
+' Cross-domain relationships
+TraderConfig ..> Trader : hydrates
+Trader --> ExecContext : builds
+ExecContext ..> Decision : produces
+Decision ..> Position : creates/closes
+Position ..> PositionDB : persists
+Trader ..> Symbol : trades
+
+@enduml

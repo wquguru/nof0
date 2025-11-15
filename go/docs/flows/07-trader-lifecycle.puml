@@ -1,0 +1,124 @@
+@startuml Trader Lifecycle
+!theme plain
+
+participant "Manager" as MGR
+participant "Trader" as TDR
+participant "Repository" as REPO
+database "PostgreSQL" as DB
+
+== Registration ==
+MGR -> MGR: RegisterTrader(config)
+activate MGR
+
+MGR -> MGR: Validate config
+MGR -> MGR: Resolve providers
+note right
+  - Exchange provider
+  - Market provider
+  - Executor
+end note
+
+MGR -> TDR: Create trader instance
+activate TDR
+note right of TDR
+  Initial state:
+  - TraderStateStopped
+  - Empty positions
+  - Empty cooldowns
+end note
+
+MGR -> REPO: hydrateTraderFromState()
+activate REPO
+REPO -> DB: Query trader_runtime_state
+DB --> REPO: RuntimeState
+REPO -> DB: Query trader_symbol_cooldowns
+DB --> REPO: Cooldown[]
+REPO --> MGR: shouldAutoStart, state
+deactivate REPO
+
+alt AutoStart = true or resumed state
+    MGR -> TDR: Start()
+    TDR -> TDR: State = TraderStateRunning
+    TDR -> TDR: UpdatedAt = now()
+end
+
+MGR -> REPO: persistRuntimeState(trader)
+REPO -> DB: Upsert trader_runtime_state
+
+MGR --> MGR: Trader registered
+deactivate MGR
+
+== State Transitions ==
+group Pause
+    MGR -> TDR: Pause()
+    TDR -> TDR: State = TraderStatePaused
+    TDR -> TDR: UpdatedAt = now()
+    MGR -> REPO: persistRuntimeState()
+end
+
+group Resume
+    MGR -> TDR: Resume()
+    TDR -> TDR: State = TraderStateRunning
+    TDR -> TDR: UpdatedAt = now()
+    MGR -> REPO: persistRuntimeState()
+end
+
+group Stop
+    MGR -> TDR: Stop()
+    TDR -> TDR: State = TraderStateStopped
+    TDR -> TDR: UpdatedAt = now()
+    MGR -> REPO: persistRuntimeState()
+end
+
+== Active Trading Cycle ==
+loop While State = Running
+    MGR -> TDR: ShouldMakeDecision()
+    activate TDR
+
+    alt State != Running
+        TDR --> MGR: false
+    else In pause window
+        TDR -> TDR: Check PauseUntil
+        alt now() < PauseUntil
+            TDR --> MGR: false
+        end
+    else Decision interval check
+        TDR -> TDR: Check LastDecisionAt
+        alt Interval not elapsed
+            TDR --> MGR: false
+        else Ready
+            TDR --> MGR: true
+        end
+    end
+
+    deactivate TDR
+
+    alt Should make decision
+        MGR -> TDR: Run(ctx, executorContext)
+        activate TDR
+
+        TDR -> TDR: Check Sharpe gating
+        alt Sharpe < threshold
+            TDR -> TDR: Set PauseUntil
+            TDR --> MGR: Return (paused)
+        end
+
+        TDR -> TDR: GetFullDecision()
+        TDR -> TDR: Execute decisions
+        TDR -> TDR: Update performance
+        TDR -> TDR: RecordDecision(now())
+
+        deactivate TDR
+
+        MGR -> REPO: persistRuntimeState()
+    end
+end
+
+== Unregistration ==
+MGR -> TDR: Stop()
+MGR -> MGR: releaseAllVirtualPositions()
+MGR -> MGR: Remove from traders map
+MGR -> REPO: Delete runtime state (optional)
+deactivate TDR
+
+@enduml

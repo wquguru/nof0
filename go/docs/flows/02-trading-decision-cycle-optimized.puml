@@ -1,0 +1,184 @@
+@startuml Trading Decision Cycle (Optimized)
+!theme plain
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+
+actor User
+participant "Manager" as MGR
+participant "Trader 1" as TDR1
+participant "Trader 2" as TDR2
+participant "Trader 3" as TDR3
+participant "Executor" as EXEC
+participant "LLM Client" as LLM
+participant "Market Provider\n(with cache)" as MKT
+participant "Exchange Provider" as EXC
+database "PostgreSQL" as DB
+
+== Initialization ==
+User -> MGR: Start Manager
+activate MGR
+MGR -> DB: Load trader configs
+DB --> MGR: TraderConfig[]
+MGR -> TDR1: RegisterTrader(config)
+activate TDR1
+MGR -> TDR2: RegisterTrader(config)
+activate TDR2
+MGR -> TDR3: RegisterTrader(config)
+activate TDR3
+MGR -> MKT: Initialize providers with cache
+note right of MKT
+  **P2: Symbol List Cache**
+  - Cache symbols for 1h
+  - Reduce redundant API calls
+end note
+MGR -> EXC: Initialize providers
+MGR --> User: Manager ready
+
+== Decision Cycle (Every 3 seconds) ==
+loop Every 3 seconds
+    note over MGR
+      **P0: Concurrent Trader Execution**
+      Launch all traders in parallel goroutines
+      instead of sequential processing
+    end note
+
+    |||
+    par Trader 1 Decision Cycle
+        MGR -> TDR1: ShouldMakeDecision()?
+        TDR1 --> MGR: true
+
+        MGR -> MGR: buildContext(trader1)
+        activate MGR #LightBlue
+
+        ' Build context with optimizations
+        MGR -> EXC: GetAccount()
+        EXC --> MGR: Account
+        MGR -> EXC: GetPositions()
+        EXC --> MGR: Position[]
+
+        note right of MGR
+          **P0: Batch Market Data**
+          - Collect symbols from positions + candidates
+          - Single batch API call
+          - **~10x faster**: 100ms vs 1000ms
+        end note
+        MGR -> MGR: collectSymbols()
+        MGR -> MKT: BatchSnapshot(symbols[])
+        activate MKT #LightGreen
+        MKT --> MGR: Snapshot[]
+        deactivate MKT
+
+        MGR -> MKT: GetSymbols() [cached 1h]
+        MKT --> MGR: Symbol[]
+        MGR -> MGR: selectCandidates()
+        deactivate MGR
+
+        ' Get decision (LLM call - concurrent with other traders)
+        MGR -> EXEC: GetDecision(context)
+        activate EXEC
+        EXEC -> EXEC: renderPrompt()
+        EXEC -> LLM: Call(prompt)
+        activate LLM
+        note right of LLM
+          **P0: Concurrent LLM Calls**
+          - Each trader runs independently
+          - Total latency = max(LLM calls)
+          - Not sum(LLM calls)
+          - **3x throughput improvement**
+        end note
+        LLM --> EXEC: Decision
+        deactivate LLM
+        EXEC -> EXEC: validateSchema()
+        EXEC -> EXEC: validateRules()
+        EXEC --> MGR: Decision
+        deactivate EXEC
+
+        ' Execute decisions
+        MGR -> MGR: sortByCloseFirst()
+        MGR -> MGR: capOpenPositions()
+
+        loop For each decision
+            alt Close Position
+                MGR -> EXC: ClosePosition(symbol)
+                EXC --> MGR: OrderResponse
+                MGR -> TDR1: SetCooldown(symbol)
+                note right of MGR
+                  **P1: Async Persistence**
+                  Fire-and-forget to avoid
+                  blocking next cycle
+                end note
+                MGR ->> DB: RecordTrade() [async]
+            else Open Position
+                MGR -> MGR: validateRisk()
+                MGR -> EXC: SetLeverage(symbol, leverage)
+                MGR -> EXC: PlaceOrder(order)
+                note right of EXC
+                  Price from batch snapshot cache
+                end note
+                EXC --> MGR: OrderResponse
+                MGR ->> DB: RecordTrade() [async]
+            end
+        end
+
+        ' Update performance
+        MGR -> TDR1: updateMetrics()
+        note right of MGR
+          **P1: Async Persistence**
+          - Fire-and-forget DB writes
+          - Don't block next cycle
+          - **~100ms saved per cycle**
+        end note
+        MGR ->> DB: saveState() [async]
+        MGR -> TDR1: recordCycle()
+
+    else Trader 2 Decision Cycle
+        MGR -> TDR2: ShouldMakeDecision()?
+        TDR2 --> MGR: true
+
+        note over MGR, EXEC
+          **Same optimized flow as Trader 1**
+          - Running concurrently in separate goroutine
+          - Shares cached market data
+        end note
+
+        MGR -> MGR: buildContext(trader2)
+        MGR -> MKT: BatchSnapshot(symbols[])
+        MGR -> EXEC: GetDecision(context)
+        EXEC -> LLM: Call(prompt)
+        note right
+          Concurrent with Trader 1 LLM call
+        end note
+        LLM --> EXEC: Decision
+        EXEC --> MGR: Decision
+        MGR -> EXC: executeOrders()
+        MGR ->> DB: saveState() [async]
+
+    else Trader 3 Decision Cycle
+        MGR -> TDR3: ShouldMakeDecision()?
+        TDR3 --> MGR: false
+        note right of TDR3
+          Not ready for decision
+          (interval not elapsed)
+        end note
+    end
+
+    note over MGR
+      **Concurrent Execution Complete**
+      - sync.WaitGroup ensures all traders finish
+      - Ready for next tick
+    end note
+end
+
+== Shutdown ==
+User -> MGR: Stop()
+MGR -> TDR1: Stop()
+deactivate TDR1
+MGR -> TDR2: Stop()
+deactivate TDR2
+MGR -> TDR3: Stop()
+deactivate TDR3
+MGR -> LLM: Close()
+deactivate MGR
+MGR --> User: Stopped
+
+@enduml

@@ -1,0 +1,516 @@
+@startuml 01a-config
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam classAttributeIconSize 0
+
+title Configuration Entity Model - Field Definitions (Actual Implementation)
+
+' ============================================
+' Main Configuration Entity
+' ============================================
+class MainConfig <<Configuration>> {
+  + Name: string
+  + Env: string = "test"
+  + Host: string
+  + Port: int
+  + DataPath: string = "../../mcp/data"
+  --
+  + Postgres: PostgresConf
+  + Cache: CacheConf
+  + TTL: CacheTTL
+  + Logging: LoggingConf
+  --
+  + LLM: Section[LLMConfig]
+  + Executor: Section[ExecutorConfig]
+  + Manager: Section[ManagerConfig]
+  + Exchange: Section[ExchangeConfig]
+  + Market: Section[MarketConfig]
+}
+
+class PostgresConf <<Value Object>> {
+  + DataSource: string
+  + MaxOpen: int = 10
+  + MaxIdle: int = 5
+  + MaxLifetime: duration = 5m
+}
+
+class CacheConf <<Value Object>> {
+  + Host: string
+  + Type: string
+  + Pass: string
+  + Tls: bool
+}
+
+class CacheTTL <<Value Object>> {
+  + Short: int = 10
+  + Medium: int = 60
+  + Long: int = 300
+}
+
+class LoggingConf <<Value Object>> {
+  + SlowThreshold: SlowThresholdConf
+  + VerboseSQL: bool = false
+  + VerboseLLM: bool = false
+}
+
+class SlowThresholdConf <<Value Object>> {
+  + SQL: int = 1000
+  + Redis: int = 500
+}
+
+' ============================================
+' LLM Configuration Entity
+' ============================================
+class LLMConfig <<Configuration>> {
+  + BaseURL: string
+  + APIKey: string
+  + DefaultModel: string = "gpt-5"
+  + Timeout: duration = 60s
+  + MaxRetries: int = 3
+  + LogLevel: string = "info"
+  --
+  + Models: map[string]ModelConfig
+  + Budget: BudgetConfig
+}
+
+class ModelConfig <<Value Object>> {
+  + Provider: string
+  + ModelName: string
+  + Temperature: float64
+  + MaxCompletionTokens: int
+  + Priority: int
+  + CostTier: string
+}
+
+class BudgetConfig <<Value Object>> {
+  + DailyTokenLimit: int = 500000
+  + AlertThresholdPct: int = 80
+  + StrictEnforcement: bool = true
+  + CostPerMillionTokens: map[string]float64
+}
+
+' ============================================
+' Executor Configuration Entity
+' ============================================
+class ExecutorConfig <<Configuration>> {
+  + MajorCoinLeverage: int = 20
+  + AltcoinLeverage: int = 10
+  + MinConfidence: int = 75
+  + MinRiskReward: float64 = 3.0
+  + MaxPositions: int = 4
+  --
+  + DecisionInterval: duration = 3m
+  + DecisionTimeout: duration = 60s
+  + MaxConcurrentDecisions: int = 1
+  --
+  + AllowedTraderIDs: []string
+  + SigningKey: string
+  + Overrides: map[string]interface{}
+  --
+  + PromptSchemaVersion: string = "v1.0.0"
+  + PromptValidation: PromptValidationConfig
+  + OutputValidation: OutputValidationConfig
+}
+
+class PromptValidationConfig <<Value Object>> {
+  + StrictMode: bool = true
+  + RequireVersionHeader: bool = true
+}
+
+class OutputValidationConfig <<Value Object>> {
+  + Enabled: bool = true
+  + SchemaPath: string
+  + FailOnInvalid: bool = true
+}
+
+' ============================================
+' Manager Configuration Entity
+' ============================================
+class ManagerConfig <<Configuration>> {
+  + Manager: ManagerSettings
+  + Monitoring: MonitoringConfig
+  + Traders: []TraderConfig
+}
+
+class ManagerSettings <<Value Object>> {
+  + ExchangeProviderCloseCond: CloseCond
+  + TraderCloseCond: CloseCond
+}
+
+class CloseCond <<Value Object>> {
+  + PNLPercentage: float64 = 0.05
+  + DrawdownPercentage: float64 = 0.5
+}
+
+class MonitoringConfig <<Value Object>> {
+  + UpdateInterval: duration = 15s
+  + AlertWebhook: string
+  + MetricsExporter: string = "prometheus"
+}
+
+class TraderConfig <<Entity>> {
+  + ID: string {PK}
+  + Name: string
+  + ExchangeProvider: string
+  + MarketProvider: string
+  --
+  + OrderStyle: OrderStyle = "market_ioc"
+  + MarketIOCSlippageBps: float64 = 75
+  --
+  + PromptTemplate: string
+  + ExecutorTemplate: string
+  + Model: string
+  --
+  + DecisionInterval: duration
+  + AllocationPct: float64
+  --
+  + AutoStart: bool = false
+  + JournalEnabled: bool = false
+  + JournalDir: string
+  --
+  + RiskParams: RiskParameters
+  + ExecGuards: ExecGuards
+  --
+  + Version: int64
+}
+
+class RiskParameters <<Value Object>> {
+  + MaxPositions: int
+  + MaxPositionSizeUSD: float64
+  + MaxMarginUsagePct: float64
+  + MajorCoinLeverage: int
+  + AltcoinLeverage: int
+  + MinRiskRewardRatio: float64
+  + MinConfidence: int
+  + StopLossEnabled: bool = true
+  + TakeProfitEnabled: bool = true
+}
+
+class ExecGuards <<Value Object>> {
+  + MaxNewPositionsPerCycle: int
+  + LiquidityThresholdUSD: float64
+  + MaxMarginUsagePct: float64
+  --
+  + BTCETHMinEquityMultiple: float64
+  + BTCETHMaxEquityMultiple: float64
+  + AltMinEquityMultiple: float64
+  + AltMaxEquityMultiple: float64
+  --
+  + CooldownAfterClose: duration
+  --
+  + EnableLiquidityGuard: *bool
+  + EnableMarginUsageGuard: *bool
+  + EnableValueBandGuard: *bool
+  + EnableCooldownGuard: *bool
+  --
+  + CandidateLimit: int
+  --
+  + SharpePauseThreshold: float64
+  + PauseDurationOnBreach: duration
+}
+
+' ============================================
+' Market Configuration Entity
+' ============================================
+class MarketConfig <<Configuration>> {
+  + Default: string = "hyperliquid_testnet"
+  + Providers: map[string]MarketProviderConfig
+}
+
+class MarketProviderConfig <<Value Object>> {
+  + Type: string
+  + Testnet: bool
+  + Timeout: duration = 8s
+  + HTTPTimeout: duration = 10s
+  + MaxRetries: int = 3
+}
+
+' ============================================
+' Exchange Configuration Entity
+' ============================================
+class ExchangeConfig <<Configuration>> {
+  + Default: string = "hyperliquid_testnet"
+  + Providers: map[string]ExchangeProviderConfig
+}
+
+class ExchangeProviderConfig <<Value Object>> {
+  + Type: string
+  + PrivateKey: string
+  + MainAddress: string
+  + Testnet: bool
+  + Timeout: duration = 30s
+  + VaultAddress: string
+}
+
+' ============================================
+' Relationships
+' ============================================
+MainConfig *-- PostgresConf
+MainConfig *-- "1..*" CacheConf
+MainConfig *-- CacheTTL
+MainConfig *-- LoggingConf
+LoggingConf *-- SlowThresholdConf
+
+MainConfig ..> LLMConfig : Section reference
+MainConfig ..> ExecutorConfig : Section reference
+MainConfig ..> ManagerConfig : Section reference
+MainConfig ..> MarketConfig : Section reference
+MainConfig ..> ExchangeConfig : Section reference
+
+LLMConfig *-- "1..*" ModelConfig : models
+LLMConfig *-- BudgetConfig
+
+ExecutorConfig *-- PromptValidationConfig
+ExecutorConfig *-- OutputValidationConfig
+
+ManagerConfig *-- ManagerSettings
+ManagerConfig *-- MonitoringConfig
+ManagerConfig *-- "1..*" TraderConfig : traders
+
+ManagerSettings *-- "2" CloseCond
+TraderConfig *-- RiskParameters
+TraderConfig *-- ExecGuards
+TraderConfig ..> ExchangeProviderConfig : references
+TraderConfig ..> MarketProviderConfig : references
+TraderConfig ..> ModelConfig : references
+
+MarketConfig *-- "1..*" MarketProviderConfig : providers
+ExchangeConfig *-- "1..*" ExchangeProviderConfig : providers
+
+' ============================================
+' Notes
+' ============================================
+note right of MainConfig
+  **Entry Point Configuration**
+  Source: etc/nof0.yaml
+  Go struct: internal/config.Config
+
+  Environment variables:
+  - ${Postgres__DataSource}
+  - ${Cache__0__Host}
+  - ${Cache__0__Pass}
+  - ${Cache__0__Tls}
+
+  Section[T] pattern:
+  - File: "llm.yaml" → hydrates LLMConfig
+  - Lazy loading via Hydrate(baseDir)
+end note
+
+note right of PostgresConf
+  **Database Connection Pool**
+  Go struct: internal/config.PostgresConf
+
+  MaxOpen: Active connections (default 10)
+  MaxIdle: Idle pool size (default 5)
+  MaxLifetime: Recycle period (default 5m)
+end note
+
+note right of CacheTTL
+  **Cache Expiration Policy**
+  Go struct: internal/config.CacheTTL
+
+  Usage by data type:
+  - Short (10s): Fast-changing (prices)
+  - Medium (60s): Lists (trades)
+  - Long (300s): Aggregations
+end note
+
+note right of LLMConfig
+  **LLM Provider Configuration**
+  Source: etc/llm.yaml
+  Go struct: pkg/llm.Config
+
+  Model priority order:
+  1. gpt-5 (high cost, priority 1)
+  2. claude-sonnet-4.5 (high cost, priority 2)
+  3. deepseek-chat (medium cost, priority 3)
+
+  Budget enforcement:
+  - Daily limit: 500k tokens
+  - Alert at 80% usage
+  - Block requests when limit hit
+end note
+
+note right of BudgetConfig
+  **Token Budget Control**
+
+  Cost tracking per model:
+  - gpt-5: $18.0/M tokens
+  - claude-sonnet-4.5: $16.0/M tokens
+  - deepseek-chat: $2.0/M tokens
+
+  StrictEnforcement=true:
+  Blocks requests exceeding daily limit
+end note
+
+note right of ExecutorConfig
+  **Decision Engine Configuration**
+  Source: etc/executor.yaml
+  Go struct: pkg/executor.Config
+
+  Validation pipeline:
+  1. Schema version check
+  2. JSON schema validation
+  3. Business rule validation
+
+  Risk thresholds:
+  - Major coins: 20x max leverage
+  - Altcoins: 10x max leverage
+  - Min confidence: 75%
+  - Min R:R ratio: 3.0
+end note
+
+note right of ManagerConfig
+  **Trader Management**
+  Source: etc/manager.yaml
+  Go struct: pkg/manager.Config
+
+  Global close conditions:
+  - PNL threshold: 5%
+  - Drawdown threshold: 50%
+
+  Monitoring:
+  - Update interval: 15s
+  - Metrics: Prometheus format
+
+  Supports multiple trader instances
+  with per-trader risk profiles
+end note
+
+note right of CloseCond
+  **Position Close Condition**
+  Go struct: pkg/manager.CloseCond
+
+  PNLPercentage: Profit/loss threshold
+  DrawdownPercentage: Max drawdown limit
+
+  Applied at two levels:
+  1. ExchangeProvider level (all traders)
+  2. Individual Trader level
+end note
+
+note right of TraderConfig
+  **Individual Trader Instance**
+  Go struct: pkg/manager.TraderConfig
+
+  Identity:
+  - ID: Unique identifier (PK)
+  - Name: Human-readable label
+
+  Providers:
+  - ExchangeProvider: Execution venue
+  - MarketProvider: Data source
+  - Model: LLM model name
+
+  Prompt templates:
+  - PromptTemplate: System role
+    (manager's strategy prompt)
+  - ExecutorTemplate: User query
+    (executor's decision prompt)
+
+  Execution:
+  - OrderStyle: market_ioc/limit
+  - MarketIOCSlippageBps: 75 = 0.75%
+
+  Journal:
+  - JournalEnabled: Enable write-ahead log
+  - JournalDir: Log file directory
+
+  Lifecycle:
+  - AutoStart: Start on boot
+  - Version: Config version (optimistic lock)
+end note
+
+note right of RiskParameters
+  **Per-Trader Risk Limits**
+  Go struct: pkg/manager.RiskParameters
+
+  Position limits:
+  - MaxPositions: Count limit
+  - MaxPositionSizeUSD: Dollar limit per position
+  - MaxMarginUsagePct: Total margin cap
+
+  Leverage by asset class:
+  - MajorCoinLeverage: BTC, ETH
+  - AltcoinLeverage: Others
+
+  Decision quality gates:
+  - MinRiskRewardRatio: Expected return/risk
+  - MinConfidence: LLM confidence score
+
+  Risk controls:
+  - StopLossEnabled: Auto-close on loss
+  - TakeProfitEnabled: Auto-close on profit
+
+  Note: Stop/Take profit prices are
+  determined by LLM decision output,
+  not configured here.
+end note
+
+note bottom of ExecGuards
+  **Execution Guards (Risk Gates)**
+  Go struct: pkg/manager.ExecGuards
+
+  **Per-cycle limits:**
+  - MaxNewPositionsPerCycle: Cap new opens
+  - CandidateLimit: Max decision candidates
+
+  **Liquidity guard:**
+  - LiquidityThresholdUSD: Min 24h volume
+  - EnableLiquidityGuard: Feature toggle
+
+  **Margin usage guard:**
+  - MaxMarginUsagePct: Total margin cap
+  - EnableMarginUsageGuard: Feature toggle
+
+  **Value band guard:**
+  Position size must be within equity multiples:
+  - BTC/ETH: [Min, Max] * Account Equity
+  - Altcoins: [Min, Max] * Account Equity
+  - EnableValueBandGuard: Feature toggle
+
+  **Cooldown guard:**
+  - CooldownAfterClose: Wait period after close
+  - EnableCooldownGuard: Feature toggle
+
+  **Performance gating:**
+  - SharpePauseThreshold: Min Sharpe ratio
+  - PauseDurationOnBreach: Pause duration
+
+  *bool = nil means default enabled
+end note
+
+note bottom of MarketConfig
+  **Market Data Providers**
+  Source: etc/market.yaml
+  Go struct: pkg/market.Config
+
+  Supported providers:
+  - hyperliquid (mainnet)
+  - hyperliquid_testnet
+
+  Timeout hierarchy:
+  - Timeout: Per-API call (8s)
+  - HTTPTimeout: HTTP layer (10s)
+
+  Default: hyperliquid_testnet
+end note
+
+note bottom of ExchangeConfig
+  **Exchange Execution Providers**
+  Source: etc/exchange.yaml
+  Go struct: pkg/exchange.Config
+
+  Provider types:
+  - hyperliquid: Real execution
+  - sim: Paper trading (in-memory)
+
+  Credentials (via env vars):
+  - HYPERLIQUID_PRIVATE_KEY
+  - HYPERLIQUID_MAIN_ADDRESS
+  - HYPERLIQUID_VAULT_ADDRESS
+
+  Default: hyperliquid_testnet
+end note
+
+@enduml

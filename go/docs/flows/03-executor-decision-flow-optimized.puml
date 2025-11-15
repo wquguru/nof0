@@ -1,0 +1,177 @@
+@startuml Executor Decision Flow (Optimized)
+!theme plain
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+
+participant "Manager" as MGR
+participant "Executor" as EXEC
+participant "PromptRenderer" as RENDER
+participant "LLM Client" as LLM
+participant "JSONValidator" as VALID
+
+MGR -> EXEC: GetFullDecision(context)
+activate EXEC
+
+== Phase 0: Input Quality Checks ==
+EXEC -> EXEC: logInputWarnings(input)
+note right of EXEC
+  **Current**: Logs anomalies (non-blocking)
+  - Large price changes (>5% 1h, >10% 4h)
+  - Invalid indicators (RSI out of range)
+  - Missing market data
+  - Duplicate positions
+  - Non-positive account equity
+
+  **Suggested rename**: detectMarketAnomalies()
+  **P0 Enhancement**: Inject anomaly flags into prompt
+  to inform LLM about unusual market conditions
+end note
+
+== Phase 1: Prompt Building ==
+EXEC -> EXEC: buildPromptInputs(config, context)
+note right
+  Collect from Manager's prepared context:
+  - Account, Positions, Market data
+  - Performance metrics, Candidates
+end note
+
+EXEC -> RENDER: Render(inputs)
+activate RENDER
+note right of RENDER
+  **P2: Template Pre-loading**
+  - Template loaded at init (~5-10ms saved)
+  - Hash computed once for versioning
+end note
+RENDER --> EXEC: promptStr
+deactivate RENDER
+
+EXEC -> EXEC: llm.DigestString(promptStr)
+note right
+  Generate SHA256 hash (first 8 chars logged)
+  Used for: log correlation, debugging, audit trail
+  **P2**: Store prompt_hash in decision_cycles table
+end note
+
+== Phase 2: LLM Call ==
+EXEC -> LLM: ChatStructured(request, &decisionContract)
+activate LLM
+note right of LLM
+  **Metrics to collect** (P1):
+  - Latency P99 (SLA: <3s)
+  - Token count (cost tracking)
+  - Rate limit hits
+end note
+
+LLM -> LLM: callAPI() + parseStructuredOutput()
+
+alt Success
+    LLM --> EXEC: ChatResponse + decisionContract
+
+else Error
+    LLM --> EXEC: error
+    note right of EXEC
+      **P0: Missing retry logic**
+      Should handle:
+      - Transient (timeout/5xx): retry with backoff
+      - Rate limit (429): exponential backoff
+      - Fatal (401/400): fail immediately
+    end note
+    EXEC --> MGR: FullDecision{nil} + error
+end
+deactivate LLM
+
+== Phase 3: Schema Validation ==
+alt Schema validation enabled
+    EXEC -> VALID: ValidateBytes(rawJSON)
+    activate VALID
+    VALID -> VALID: validateAgainstJSONSchema()
+
+    alt Invalid + FailOnInvalid=true
+        VALID --> EXEC: ValidationError
+        EXEC --> MGR: FullDecision{nil} + error
+
+    else Invalid + FailOnInvalid=false
+        VALID --> EXEC: ValidationError
+        note right of EXEC
+          **P1: Risky behavior**
+          Current: logs warning + continues
+          Recommended: retryWithSchemaHint()
+        end note
+        EXEC -> EXEC: logx.Slowf(warning)
+    else Valid
+        VALID --> EXEC: nil
+    end
+    deactivate VALID
+end
+
+== Phase 4: Business Rule Validation ==
+EXEC -> EXEC: mapDecisionContract(out, positions)
+note right
+  Transform decisionContract to Decision:
+  - Normalize action ("open"/"close")
+  - Apply default leverage
+  - Calculate position size USD
+end note
+
+EXEC -> EXEC: ValidateDecisions(cfg, input, []Decision)
+activate EXEC #LightYellow
+note right
+  Sequential guards (fail-fast, cheap-first):
+
+  **O(1) checks**:
+  1. enforceMaxPositionsLimit()
+  2. checkMarginAvailable()
+
+  **O(n) checks**:
+  3. validateLeverageLimits()
+  4. enforcePositionSizeBands()
+
+  **Potentially expensive**:
+  5. checkLiquidityThreshold() - may need orderbook
+  6. verifyCooldownPeriod() - in-memory or DB lookup
+
+  **P2**: Reorder if external calls become bottleneck
+end note
+
+alt Validation fails
+    EXEC -> EXEC: trackFailure(symbol, err)
+    note right of EXEC
+      **P0: Stateful design issue**
+      - Stores failures in map[string]int
+      - No mutex protection (race condition risk)
+      - Accumulates indefinitely (memory leak)
+
+      **Recommended refactor**:
+      Remove internal state, return FailureEvent to Manager:
+        type FailureEvent {
+          Symbol    string
+          Error     error
+          Timestamp time.Time
+        }
+      Manager persists to decision_cycles table
+    end note
+    EXEC --> MGR: ExecutorResult{err, rejectedDecisions}
+    note right of EXEC
+      **P1: Return type improvement needed**
+
+      Current FullDecision contains both error and decisions
+      Ambiguous: partial success or total failure?
+
+      Suggested:
+        type ExecutorResult {
+          ValidatedDecisions []Decision
+          RejectedDecisions  []RejectionReason
+          FatalError         error // LLM/system error
+        }
+    end note
+
+else Validation succeeds
+    EXEC -> EXEC: resetFailure(symbol)
+    note right: Also modifies internal state map
+    EXEC --> MGR: ExecutorResult{validatedDecisions}
+end
+
+deactivate EXEC
+deactivate EXEC
+
+@enduml

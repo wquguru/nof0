@@ -1,0 +1,208 @@
+@startuml Order Execution Flow
+!theme plain
+
+participant "Manager" as MGR
+participant "Trader" as TDR
+participant "Exchange Provider" as EXC
+participant "Market Provider" as MKT
+database "PostgreSQL" as DB
+
+MGR -> MGR: ExecuteDecision(trader, decision)
+activate MGR
+
+== Pre-execution Validation ==
+MGR -> MGR: Validate decision params
+note right
+  - Symbol not empty
+  - Position size >= 0
+  - Valid action
+end note
+
+alt Action = close_long/close_short
+    MGR -> MGR: ensureCloseOwnership()
+    note right: Verify trader owns position
+
+    == Close Position Flow ==
+    MGR -> MKT: Snapshot(symbol)
+    MKT --> MGR: Market price
+    MGR -> EXC: SetMarkPrice(symbol, price)
+    MGR -> EXC: CancelAllBySymbol(symbol)
+    note right: Cancel resting orders
+
+    MGR -> EXC: ClosePosition(symbol)
+    activate EXC
+    EXC -> EXC: Execute market close
+    EXC --> MGR: OrderResponse
+    deactivate EXC
+
+    MGR -> MGR: parseOrderFill(response)
+    note right
+      Extract fill price/qty
+      Log if parse fails
+    end note
+
+    MGR -> MGR: Log execution details
+    note right
+      Structured log:
+      - Order response status
+      - Fill price/qty/timestamp
+      - Expected vs actual qty
+    end note
+
+    MGR -> TDR: Update Cooldown[symbol]
+    MGR -> DB: UpsertCooldown(record)
+    note right: Best-effort persistence
+    MGR -> MGR: recordPositionEvent(CLOSE)
+    MGR -> MGR: releaseVirtualPosition()
+
+else Action = open_long/open_short
+    MGR -> MGR: ensureSymbolAvailable()
+    note right: Check symbol not in use
+
+    == Open Position Flow ==
+    MGR -> MGR: Resolve leverage
+    note right
+      Use decision.Leverage or
+      trader's major/alt defaults
+    end note
+
+    MGR -> MGR: enforceSecondaryRisk()
+    note right
+      - Check allocation limits
+      - Validate notional size
+      - Check existing positions
+    end note
+
+    MGR -> EXC: GetAssetIndex(symbol)
+    EXC --> MGR: assetIdx
+    MGR -> EXC: UpdateLeverage(assetIdx, leverage)
+    note right: Best-effort, error ignored
+
+    alt Entry price not provided
+        MGR -> MKT: Snapshot(symbol)
+        MKT --> MGR: Current price + timestamp
+        MGR -> MGR: price = snap.Price.Last
+        MGR -> MGR: Log snapshot timestamp
+        note right
+          Log for audit:
+          - Snapshot time
+          - Price source
+          - Age of data
+        end note
+    end
+
+    MGR -> EXC: SetMarkPrice(symbol, price)
+    MGR -> MGR: Calculate qty = notional / price
+
+    alt OrderStyle = market_ioc
+        MGR -> MGR: Calculate slippage
+        MGR -> MGR: Log order preparation
+        note right
+          Log:
+          - Symbol, side, qty
+          - Raw price, slippage
+          - Notional USD
+        end note
+        MGR -> EXC: IOCMarket(symbol, isBuy, qty, slippage)
+        activate EXC
+        EXC -> EXC: Execute IOC market order
+        EXC --> MGR: OrderResponse
+        deactivate EXC
+
+    else OrderStyle = limit_ioc
+        MGR -> EXC: FormatPrice(symbol, price)
+        EXC --> MGR: priceStr
+        MGR -> EXC: FormatSize(symbol, qty)
+        EXC --> MGR: sizeStr
+        MGR -> MGR: buildCloid()
+        note right
+          CLOID = hash(trader+symbol+qty+time)
+          Provides natural deduplication
+        end note
+
+        MGR -> MGR: Log order preparation
+        note right
+          Log:
+          - CLOID, asset_idx
+          - Price/size (raw + formatted)
+          - Leverage
+        end note
+
+        MGR -> EXC: PlaceOrder(limitIOC)
+        activate EXC
+        EXC -> EXC: Execute limit IOC order
+        EXC --> MGR: OrderResponse
+        deactivate EXC
+    end
+
+    == Post-execution Validation & Setup ==
+    MGR -> MGR: parseOrderFill(response)
+    note right
+      Extract: fillPrice, fillQty
+      Fallback to request params if parse fails
+    end note
+
+    MGR -> MGR: Log order response
+    note right
+      Structured log:
+      - Order status (filled/resting/error)
+      - Fill price/qty
+      - Partial fill detection
+      - Response timestamp
+    end note
+
+    alt Stop-loss/Take-profit supported
+        MGR -> EXC: SetStopLoss(symbol, side, qty, sl)
+        MGR -> EXC: SetTakeProfit(symbol, side, qty, tp)
+        note right
+          Best-effort, errors ignored
+          Consider async monitoring
+        end note
+    end
+    MGR -> MGR: recordPositionEvent(OPEN)
+    MGR -> MGR: assignVirtualPosition()
+    note right
+      Use actual fillQty from response
+      Track position allocation per trader
+    end note
+
+else Action = hold/wait
+    MGR -> MGR: Skip execution
+    note right: No market action needed
+end
+
+MGR -> MGR: Log execution summary
+note right
+  Final structured log:
+  - Decision action/symbol
+  - Execution result (ok/error)
+  - Duration
+  - Key metrics
+end note
+
+MGR --> MGR: Return execution result
+deactivate MGR
+
+note over MGR, DB
+  **Design Notes:**
+  1. Observability > Prevention
+     - Comprehensive structured logging
+     - Audit trail for debugging
+
+  2. Best-effort approach
+     - Leverage update: ignored if fails
+     - SL/TP setup: async monitoring
+     - Cooldown persist: non-blocking
+
+  3. Natural guarantees
+     - CLOID provides deduplication
+     - Exchange is source of truth
+     - Allow eventual consistency
+
+  4. Focus areas
+     - Price snapshot timestamp tracking
+     - Order response validation
+     - Partial fill detection
+end note
+
+@enduml

@@ -1,0 +1,253 @@
+@startuml Entity Lifecycle State Machines
+!theme plain
+
+title Entity Lifecycle State Machines
+
+' Trader Lifecycle
+state "Trader Lifecycle" as TraderLifecycle {
+    [*] --> Registered : RegisterTrader(config)
+
+    Registered : entry / Load config
+    Registered : entry / Hydrate from DB
+    Registered : entry / Resolve providers
+
+    Registered --> Stopped : config.AutoStart = false
+    Registered --> Running : config.AutoStart = true OR\nhydrated.shouldAutoStart = true
+
+    Running : entry / State = Running
+    Running : do / ShouldMakeDecision()
+    Running : do / Execute decision cycle
+    Running : exit / PersistRuntimeState()
+
+    Running --> Paused : Pause()
+    Running --> Stopped : Stop()
+    Running --> SharpeGated : SharpeRatio < threshold
+
+    Paused : entry / State = Paused
+    Paused : entry / UpdatedAt = now()
+
+    Paused --> Running : Resume()
+    Paused --> Stopped : Stop()
+
+    SharpeGated : entry / PauseUntil = now() + duration
+    SharpeGated : Waiting for PauseUntil
+
+    SharpeGated --> Running : now() >= PauseUntil AND\nSharpeRatio >= threshold
+    SharpeGated --> Stopped : Stop()
+
+    Stopped : entry / State = Stopped
+    Stopped : entry / UpdatedAt = now()
+
+    Stopped --> Running : Start()
+    Stopped --> [*] : UnregisterTrader()
+}
+
+note right of TraderLifecycle
+  **Trigger Conditions:**
+  - Manual: Start(), Pause(), Stop()
+  - Automatic: Sharpe gating
+  - Schedule: DecisionInterval
+end note
+
+' Position Lifecycle
+state "Position Lifecycle" as PositionLifecycle {
+    [*] --> PendingOpen : Decision(open_*)
+
+    PendingOpen : Validating decision
+    PendingOpen : Checking guards
+
+    PendingOpen --> Opening : Validation passed
+    PendingOpen --> [*] : Validation failed
+
+    Opening : Placing order
+    Opening : Waiting for fill
+
+    Opening --> Open : Order filled
+    Opening --> [*] : Order rejected/cancelled
+
+    Open : entry / Add to Trader.Positions
+    Open : entry / assignVirtualPosition()
+    Open : entry / Insert to positions DB
+    Open : do / Track PnL
+    Open : do / Monitor SL/TP
+
+    Open --> PendingClose : Decision(close_*) OR\nSL/TP triggered
+
+    PendingClose : Cancelling resting orders
+    PendingClose : Placing close order
+
+    PendingClose --> Closing : Close order placed
+
+    Closing : Waiting for fill
+
+    Closing --> Closed : Order filled
+    Closing --> Open : Close failed (retry)
+
+    Closed : entry / Remove from Trader.Positions
+    Closed : entry / Set Cooldown[symbol]
+    Closed : entry / Update positions DB (is_closed=true)
+    Closed : entry / Insert cooldown to DB
+    Closed : entry / releaseVirtualPosition()
+
+    Closed --> [*]
+}
+
+note right of PositionLifecycle
+  **Virtual Position:**
+  - Tracked in Trader.Positions map
+  - Persisted to positions table as event log
+
+  **Cooldown:**
+  - Starts immediately after close
+  - Duration from ExecGuards.CooldownAfterClose
+  - Prevents re-opening same symbol
+end note
+
+' Decision Lifecycle
+state "Decision Lifecycle" as DecisionLifecycle {
+    [*] --> ContextBuilding : Decision cycle triggered
+
+    ContextBuilding : Fetch account state
+    ContextBuilding : Fetch positions
+    ContextBuilding : Fetch market data
+    ContextBuilding : Select candidates
+    ContextBuilding : Apply guards
+
+    ContextBuilding --> PromptRendering : Context ready
+
+    PromptRendering : Load template
+    PromptRendering : Inject context
+    PromptRendering : Build prompt
+
+    PromptRendering --> LLMCall : Prompt rendered
+
+    LLMCall : Call LLM API
+    LLMCall : Parse structured output
+
+    LLMCall --> SchemaValidation : Response received
+    LLMCall --> Failed : API error/timeout
+
+    SchemaValidation : Validate against JSON schema
+
+    SchemaValidation --> LogicalValidation : Schema valid OR\nFailOnInvalid=false
+    SchemaValidation --> Failed : Schema invalid AND\nFailOnInvalid=true
+
+    LogicalValidation : ValidateDecisions()
+    LogicalValidation : Check position limits
+    LogicalValidation : Check margin usage
+    LogicalValidation : Check liquidity
+    LogicalValidation : Check cooldowns
+
+    LogicalValidation --> Ready : All checks passed
+    LogicalValidation --> Failed : Validation failed
+
+    Ready : entry / Reset failure counter
+    Ready : Decision ready for execution
+
+    Ready --> Executing : Manager.ExecuteDecision()
+
+    Executing : Sort (close first)
+    Executing : Cap new opens
+    Executing : Execute each decision
+
+    Executing --> Persisted : All executed
+
+    Persisted : entry / Insert to decision_cycles
+    Persisted : entry / Update performance
+    Persisted : entry / PersistRuntimeState()
+
+    Persisted --> [*]
+
+    Failed : entry / Increment failure counter
+    Failed : entry / Log error
+    Failed --> [*]
+}
+
+note right of DecisionLifecycle
+  **Validation Layers:**
+  1. Schema: JSON structure
+  2. Logical: Business rules
+  3. Risk: Guards and limits
+
+  **Failure Tracking:**
+  - Per symbol failure counter
+  - Alert after 3 consecutive failures
+end note
+
+' Configuration Lifecycle
+state "Configuration Lifecycle" as ConfigLifecycle {
+    [*] --> Loading : System startup
+
+    Loading : Read YAML file
+    Loading : Parse configuration
+    Loading : Expand env variables
+
+    Loading --> Validating : Parsed
+    Loading --> [*] : Parse error
+
+    Validating : Validate schema
+    Validating : Check required fields
+    Validating : Validate relationships
+
+    Validating --> Active : Valid
+    Validating --> [*] : Invalid
+
+    Active : entry / Persist to trader_config
+    Active : entry / Calculate checksum
+    Active : Configuration in use
+
+    Active --> Updating : Config file changed
+    Active --> [*] : System shutdown
+
+    Updating : Detect changes (checksum)
+    Updating : Parse new config
+    Updating : Validate new config
+
+    Updating --> Active : Valid, apply changes,\nincrement version
+    Updating --> Active : Invalid, keep current
+
+    note right of Updating
+      **Hot Reload:**
+      - Detect file changes
+      - Validate before applying
+      - Increment version on success
+      - Trigger trader restart if needed
+    end note
+}
+
+' Cooldown Lifecycle
+state "Cooldown Lifecycle" as CooldownLifecycle {
+    [*] --> Inactive : Symbol not in cooldown
+
+    Inactive --> Active : Position closed
+
+    Active : entry / Cooldown[symbol] = now()
+    Active : entry / Until = now() + duration
+    Active : entry / UpsertCooldown to DB
+    Active : Blocking new opens
+
+    Active --> CheckExpiry : Decision cycle
+
+    CheckExpiry : Check now() >= Until
+
+    CheckExpiry --> Expired : Cooldown elapsed
+    CheckExpiry --> Active : Still in cooldown,\nblock decision
+
+    Expired : entry / Remove from Cooldown map
+    Expired : Symbol can be traded again
+
+    Expired --> [*]
+}
+
+note right of CooldownLifecycle
+  **Purpose:**
+  - Prevent rapid open/close cycles
+  - Reduce overtrading
+  - Configurable per trader
+
+  **Storage:**
+  - In-memory: Trader.Cooldown map
+  - Persistent: trader_symbol_cooldowns table
+end note
+
+@enduml

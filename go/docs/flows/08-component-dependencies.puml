@@ -1,0 +1,153 @@
+@startuml Component Dependencies
+!theme plain
+
+skinparam component {
+    BackgroundColor<<core>> #E3F2FD
+    BackgroundColor<<provider>> #FFF3E0
+    BackgroundColor<<util>> #F3E5F5
+    BackgroundColor<<data>> #E8F5E9
+}
+
+package "pkg/" {
+
+    package "manager" <<core>> {
+        [Runner Interface] as IRunner
+        [Trader Interface] as ITrader
+        [Manager] as Manager
+        [Trader] as Trader
+        [Config] as ManagerConfig
+        [Types] as ManagerTypes
+        [Ingest] as Ingest
+        [Util] as ManagerUtil
+    }
+
+    package "executor" <<core>> {
+        [Executor Interface] as IExecutor
+        [BasicExecutor] as BasicExecutor
+        [PromptRenderer] as Renderer
+        [Validator] as Validator
+        [Context] as ExecutorContext
+        [Decision] as Decision
+    }
+
+    package "exchange" <<provider>> {
+        [Provider Interface] as IExchange
+        [HyperliquidProvider] as HLProvider
+        [SimProvider] as SimProvider
+        [Order Types] as ExchangeTypes
+    }
+
+    package "market" <<provider>> {
+        [Provider Interface] as IMarket
+        [HyperliquidMarket] as HLMarket
+        [Snapshot] as MarketSnapshot
+        [Indicators] as Indicators
+    }
+
+    package "llm" <<provider>> {
+        [LLMClient Interface] as ILLM
+        [Client] as LLMClient
+        [Config] as LLMConfig
+        [Budget] as Budget
+        [Retry] as Retry
+        [PromptMeta] as PromptMeta
+    }
+
+    package "repo" <<data>> {
+        [Repository] as Repo
+        [TraderConfigRepo] as ConfigRepo
+        [TraderRuntimeRepo] as RuntimeRepo
+    }
+
+    package "confkit" <<util>> {
+        [DotEnv] as DotEnv
+    }
+
+    package "backtest" <<util>> {
+        [Backtester] as Backtester
+    }
+}
+
+' Manager dependencies
+Manager --> ITrader : manages
+Manager --> IExecutor : uses
+Manager --> IExchange : coordinates
+Manager --> IMarket : coordinates
+Manager --> ILLM : initializes
+Manager --> Repo : persists
+Manager --> IRunner : implements
+
+Trader ..|> ITrader : implements
+Trader --> IExecutor : calls
+Trader --> IExchange : executes orders
+Trader --> IMarket : fetches data
+
+' Executor dependencies
+BasicExecutor ..|> IExecutor : implements
+BasicExecutor --> ILLM : calls
+BasicExecutor --> Renderer : uses
+BasicExecutor --> Validator : validates
+BasicExecutor --> ExecutorContext : consumes
+BasicExecutor --> Decision : produces
+
+' Provider implementations
+HLProvider ..|> IExchange : implements
+SimProvider ..|> IExchange : implements
+HLMarket ..|> IMarket : implements
+
+' LLM client
+LLMClient ..|> ILLM : implements
+LLMClient --> Budget : enforces
+LLMClient --> Retry : uses
+LLMClient --> PromptMeta : tracks
+
+' Repository layer
+Repo --> ConfigRepo : uses
+Repo --> RuntimeRepo : uses
+
+' Utility dependencies
+Manager --> ManagerConfig : loads
+Manager --> DotEnv : uses
+BasicExecutor --> LLMConfig : loads
+
+note right of Manager
+  Central orchestrator
+  - Lifecycle management
+  - Decision scheduling
+  - Risk enforcement
+  - State persistence
+end note
+
+note right of BasicExecutor
+  Decision engine
+  - Prompt rendering
+  - LLM interaction
+  - Output validation
+  - Risk validation
+end note
+
+note right of Trader
+  Strategy instance
+  - Position tracking
+  - Performance metrics
+  - Cooldown management
+  - Guard enforcement
+end note
+
+note bottom of IExchange
+  Exchange abstraction
+  - Order execution
+  - Position management
+  - Account queries
+  - Leverage control
+end note
+
+note bottom of IMarket
+  Market data abstraction
+  - Price snapshots
+  - Technical indicators
+  - Kline history
+  - Symbol metadata
+end note
+
+@enduml

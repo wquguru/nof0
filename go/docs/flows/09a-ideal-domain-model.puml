@@ -1,0 +1,407 @@
+@startuml Ideal Domain Model (Go Structs)
+!theme plain
+skinparam linetype ortho
+skinparam roundcorner 10
+
+' ==============================================================================
+' Legend
+' ==============================================================================
+legend top right
+  |<size:14><b>Entity Types</b></size> |
+  |<back:#E3F2FD>   </back>| Configuration Entity (Immutable) |
+  |<back:#FFF3E0>   </back>| Runtime State Entity (Mutable) |
+  |<back:#E8F5E9>   </back>| Value Object (Immutable) |
+  |<back:#FCE4EC>   </back>| View Object / DTO |
+  |=====|
+  |<size:14><b>Symbols</b></size> |
+  |<<Aggregate>>| Aggregate Root |
+  |<<Entity>>| Entity (has identity) |
+  |<<ValueObject>>| Value Object (no identity) |
+  |<<DTO>>| Data Transfer Object |
+endlegend
+
+' ==============================================================================
+' Configuration Domain
+' ==============================================================================
+package "Configuration Domain" #FAFAFA {
+
+    class TraderConfig <<Entity>> #E3F2FD {
+        + ID : string
+        + Name : string
+        + ExchangeProvider : string
+        + MarketProvider : string
+        + Model : string
+        + PromptTemplate : string
+        + OrderStyle : OrderStyle
+        + DecisionInterval : Duration
+        --
+        + RiskParams : RiskParameters
+        + ExecGuards : ExecGuards
+        --
+        + AllocationPct : float64
+        + AutoStart : bool
+        + Version : int64
+        --
+        + CreatedAt : Time
+        + UpdatedAt : Time
+    }
+
+    class RiskParameters <<ValueObject>> #E8F5E9 {
+        + MaxPositions : int
+        + MaxPositionSizeUSD : float64
+        + MaxMarginUsagePct : float64
+        + MajorCoinLeverage : int
+        + AltcoinLeverage : int
+        + MinRiskRewardRatio : float64
+        + MinConfidence : int
+        + StopLossEnabled : bool
+        + TakeProfitEnabled : bool
+        --
+        + Validate() : error
+    }
+
+    class ExecGuards <<ValueObject>> #E8F5E9 {
+        .. Limits ..
+        + MaxNewPositionsPerCycle : int
+        + LiquidityThresholdUSD : float64
+        .. Position Value Bands ..
+        + BTCETHMinEquityMultiple : float64
+        + BTCETHMaxEquityMultiple : float64
+        + AltMinEquityMultiple : float64
+        + AltMaxEquityMultiple : float64
+        .. Cooldown ..
+        + CooldownAfterClose : Duration
+        .. Feature Toggles ..
+        + EnableLiquidityGuard : *bool
+        + EnableMarginUsageGuard : *bool
+        + EnableValueBandGuard : *bool
+        + EnableCooldownGuard : *bool
+        .. Performance Gating ..
+        + SharpePauseThreshold : float64
+        + PauseDurationOnBreach : Duration
+        --
+        + IsEnabled(guard string) : bool
+    }
+
+    TraderConfig *-- "1" RiskParameters : contains
+    TraderConfig *-- "1" ExecGuards : contains
+}
+
+' ==============================================================================
+' Runtime State Domain
+' ==============================================================================
+package "Runtime State Domain" #FAFAFA {
+
+    class Trader <<Aggregate>> #FFF3E0 {
+        .. Identity & Config ..
+        + ID : string
+        + Config : *TraderConfig
+        --
+        .. State Machine ..
+        + State : TraderState
+        + PauseUntil : Time
+        --
+        .. Decision Scheduling ..
+        + LastDecisionAt : Time
+        --
+        .. Aggregates ..
+        + RuntimeState : *TraderRuntimeState
+        --
+        .. Dependencies (Injected) ..
+        - exchangeProvider : exchange.Provider
+        - marketProvider : market.Provider
+        - executor : executor.Executor
+        --
+        .. Lifecycle ..
+        + Start() : error
+        + Pause() : error
+        + Resume() : error
+        + Stop() : error
+        + IsActive() : bool
+        + ShouldMakeDecision() : bool
+    }
+
+    enum TraderState <<ValueObject>> #E8F5E9 {
+        Running
+        Paused
+        Stopped
+    }
+
+    class TraderRuntimeState <<Entity>> #FFF3E0 {
+        + TraderID : string
+        --
+        + Cooldowns : map[Symbol]Time
+        + Performance : *PerformanceMetrics
+        + Allocation : *CashAllocation
+        --
+        + CreatedAt : Time
+        + UpdatedAt : Time
+        --
+        + IsCoolingDown(symbol Symbol) : bool
+        + SetCooldown(symbol Symbol)
+    }
+
+    class PerformanceMetrics <<ValueObject>> #E8F5E9 {
+        + TotalPnLUSD : float64
+        + TotalPnLPct : float64
+        + SharpeRatio : float64
+        + WinRate : float64
+        + TotalTrades : int
+        + WinningTrades : int
+        + LosingTrades : int
+        + AvgWinUSD : float64
+        + AvgLossUSD : float64
+        + MaxDrawdownPct : float64
+        + CurrentDrawdownPct : float64
+        + UpdatedAt : Time
+        --
+        + ToView() : PerformanceView
+    }
+
+    class CashAllocation <<ValueObject>> #E8F5E9 {
+        + AllocatedEquityUSD : float64
+        + AllocationPct : float64
+        + CurrentEquityUSD : float64
+        + AvailableBalanceUSD : float64
+        + MarginUsedUSD : float64
+        + UnrealizedPnLUSD : float64
+        --
+        + IsOverAllocated() : bool
+    }
+
+    class Position <<Entity>> #FFF3E0 {
+        + ID : string
+        + TraderID : string
+        + Symbol : Symbol
+        + Side : Side
+        --
+        + Quantity : float64
+        + EntryPrice : float64
+        + NotionalUSD : float64
+        + Leverage : int
+        --
+        + Status : PositionStatus
+        + UnrealizedPnL : float64
+        --
+        + OpenedAt : Time
+        + ClosedAt : *Time
+        + UpdatedAt : Time
+        --
+        + CalculatePnL(markPrice float64) : float64
+        + Close() : error
+    }
+
+    enum PositionStatus <<ValueObject>> #E8F5E9 {
+        Open
+        Closed
+    }
+
+    enum Side <<ValueObject>> #E8F5E9 {
+        Long
+        Short
+    }
+
+    Trader::State --> TraderState
+    Trader o-- "1" TraderRuntimeState : manages
+    Trader o-- TraderConfig : references
+
+    TraderRuntimeState *-- "1" PerformanceMetrics
+    TraderRuntimeState *-- "1" CashAllocation
+
+    Position::Status --> PositionStatus
+    Position::Side --> Side
+    Position --> Trader : belongs to
+}
+
+' ==============================================================================
+' Decision Domain
+' ==============================================================================
+package "Decision Domain" #FAFAFA {
+
+    class Context <<DTO>> #FCE4EC {
+        .. Time Context ..
+        + CurrentTime : string
+        + RuntimeMinutes : int
+        + CallCount : int
+        --
+        .. Account Context ..
+        + Account : AccountInfo
+        + Positions : []PositionInfo
+        --
+        .. Market Context ..
+        + CandidateCoins : []CandidateCoin
+        + MarketDataMap : map[string]*Snapshot
+        + Performance : *PerformanceView
+        + AssetMeta : map[string]AssetMeta
+        --
+        .. Risk Guards (from ExecGuards) ..
+        + MaxMarginUsagePct : float64
+        + LiquidityThresholdUSD : float64
+        + BTCETHPositionValueMinMultiple : float64
+        + BTCETHPositionValueMaxMultiple : float64
+        + AltPositionValueMinMultiple : float64
+        + AltPositionValueMaxMultiple : float64
+        + CooldownAfterClose : Duration
+        + RecentlyClosed : map[Symbol]Time
+    }
+
+    class Decision <<ValueObject>> #E8F5E9 {
+        + Symbol : Symbol
+        + Action : Action
+        + Leverage : int
+        + PositionSizeUSD : float64
+        + EntryPrice : float64
+        + StopLoss : float64
+        + TakeProfit : float64
+        + Confidence : int
+        + RiskUSD : float64
+        + Reasoning : string
+        --
+        + Validate() : error
+    }
+
+    class FullDecision <<ValueObject>> #E8F5E9 {
+        + UserPrompt : string
+        + Decisions : []Decision
+        + Timestamp : Time
+        --
+        + HasDecisions() : bool
+    }
+
+    enum Action <<ValueObject>> #E8F5E9 {
+        OpenLong
+        OpenShort
+        CloseLong
+        CloseShort
+        Hold
+    }
+
+    class DecisionCycle <<Entity>> #FFF3E0 {
+        + ID : int64
+        + TraderID : string
+        + CycleNumber : int
+        + ErrorMessage : string
+        + Detail : JSONB
+        + ExecutedAt : Time
+        --
+        + IsSuccess() : bool
+    }
+
+    Decision::Action --> Action
+    FullDecision *-- "*" Decision
+    Context ..> FullDecision : produces
+    DecisionCycle ..> FullDecision : stores
+}
+
+' ==============================================================================
+' Market Data Domain
+' ==============================================================================
+package "Market Data Domain" #FAFAFA {
+
+    class Symbol <<ValueObject>> #E8F5E9 {
+        + Exchange : string
+        + Coin : string
+        --
+        + String() : string
+        + IsMajor() : bool
+    }
+
+    class AssetMeta <<ValueObject>> #E8F5E9 {
+        + MaxLeverage : float64
+        + Precision : int
+        + OnlyIsolated : bool
+    }
+
+    class Snapshot <<ValueObject>> #E8F5E9 {
+        + Symbol : Symbol
+        + Price : PriceInfo
+        + Change : ChangeInfo
+        + Indicators : IndicatorInfo
+        + OpenInterest : *OpenInterestInfo
+        + Funding : *FundingInfo
+    }
+}
+
+' ==============================================================================
+' View Objects / DTOs
+' ==============================================================================
+package "View Objects (DTOs)" #FAFAFA {
+
+    class AccountInfo <<DTO>> #FCE4EC {
+        + TotalEquity : float64
+        + AvailableBalance : float64
+        + TotalPnL : float64
+        + MarginUsed : float64
+        + PositionCount : int
+    }
+
+    class PositionInfo <<DTO>> #FCE4EC {
+        + Symbol : Symbol
+        + Side : Side
+        + EntryPrice : float64
+        + MarkPrice : float64
+        + Quantity : float64
+        + Leverage : int
+        + UnrealizedPnL : float64
+        + LiquidationPrice : float64
+    }
+
+    class PerformanceView <<DTO>> #FCE4EC {
+        + SharpeRatio : float64
+        + WinRate : float64
+        + TotalTrades : int
+        + UpdatedAt : Time
+    }
+
+    Context *-- "1" AccountInfo
+    Context *-- "*" PositionInfo
+    Context *-- "1" PerformanceView
+
+    Position ..> PositionInfo : converts to
+    PerformanceMetrics ..> PerformanceView : converts to
+}
+
+' ==============================================================================
+' Key Relationships
+' ==============================================================================
+TraderConfig ..> Trader : hydrates
+Trader ..> Context : builds
+Context ..> Decision : produces via Executor
+Decision ..> Position : opens/closes
+
+note right of Trader
+  <b>Aggregate Root</b>
+
+  Responsibilities:
+  - Lifecycle management
+  - State transitions
+  - Aggregating runtime state
+  - Coordinating dependencies
+
+  <b>Aggregate Boundary:</b>
+  - TraderRuntimeState
+  - PerformanceMetrics
+  - CashAllocation
+  - Cooldowns
+end note
+
+note right of Position
+  <b>Entity</b>
+
+  Simplified: No more virtual positions!
+  Each Position maps directly to
+  exchange account position.
+
+  One account → One trader strategy
+end note
+
+note right of Context
+  <b>DTO - Read-only View</b>
+
+  Built fresh for each decision cycle
+  from live data sources.
+
+  Not persisted, ephemeral.
+end note
+
+@enduml

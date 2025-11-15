@@ -1,0 +1,143 @@
+@startuml Risk Management & Guards
+!theme plain
+
+participant "Manager" as MGR
+participant "Executor" as EXEC
+participant "Trader" as TDR
+participant "Context Builder" as CTX
+
+== Context Building with Guards ==
+MGR -> CTX: buildExecutorContext(trader)
+activate CTX
+
+CTX -> CTX: Collect account & positions
+CTX -> CTX: Fetch market snapshots
+CTX -> CTX: Get candidate symbols
+
+CTX -> CTX: Apply guard configuration
+note right
+  Guards are conditionally enabled:
+  - MarginUsageGuard
+  - LiquidityGuard
+  - ValueBandGuard
+  - CooldownGuard
+end note
+
+alt EnableMarginUsageGuard
+    CTX -> CTX: Set MaxMarginUsagePct
+    note right: From trader.RiskParams
+end
+
+alt EnableLiquidityGuard
+    CTX -> CTX: Set LiquidityThresholdUSD
+    note right: From trader.ExecGuards
+end
+
+alt EnableValueBandGuard
+    CTX -> CTX: Set BTC/ETH position limits
+    CTX -> CTX: Set Alt position limits
+    note right
+      Min/Max equity multiples
+      for position sizing
+    end note
+end
+
+alt EnableCooldownGuard
+    CTX -> CTX: Set CooldownAfterClose
+    note right: Duration before re-opening
+end
+
+CTX --> MGR: Enriched Context
+deactivate CTX
+
+== Decision Validation ==
+MGR -> EXEC: GetFullDecision(context)
+activate EXEC
+
+EXEC -> EXEC: ValidateDecisions(config, input, decisions)
+activate EXEC #LightYellow
+
+loop For each decision
+    == Position Limit Checks ==
+    EXEC -> EXEC: Check MaxPositions
+    note right
+      Reject if new open would
+      exceed max position count
+    end note
+
+    == Margin Usage Guard ==
+    alt MarginUsageGuard enabled
+        EXEC -> EXEC: Calculate new margin usage
+        alt Margin would exceed limit
+            EXEC -> EXEC: Return error
+            note right: "margin usage would exceed limit"
+        end
+    end
+
+    == Liquidity Guard ==
+    alt LiquidityGuard enabled
+        EXEC -> EXEC: Check 24h volume
+        alt Volume < threshold
+            EXEC -> EXEC: Return error
+            note right: "insufficient liquidity"
+        end
+    end
+
+    == Leverage Validation ==
+    EXEC -> EXEC: Check leverage against AssetMeta
+    note right
+      - MaxLeverage from exchange
+      - OnlyIsolated constraint
+    end note
+    alt Leverage > MaxLeverage
+        EXEC -> EXEC: Return error
+    end
+
+    == Position Sizing Band ==
+    alt ValueBandGuard enabled
+        alt Symbol = BTC/ETH
+            EXEC -> EXEC: Check BTC/ETH bands
+            note right
+              Min/Max as multiple
+              of account equity
+            end note
+        else Symbol = Altcoin
+            EXEC -> EXEC: Check Alt bands
+        end
+
+        alt Size out of band
+            EXEC -> EXEC: Return error
+            note right: "position size out of band"
+        end
+    end
+
+    == Cooldown Enforcement ==
+    alt CooldownGuard enabled && Action = open
+        EXEC -> EXEC: Check trader.Cooldown[symbol]
+        alt Still in cooldown
+            EXEC -> EXEC: Return error
+            note right: "symbol in cooldown period"
+        end
+    end
+end
+
+deactivate EXEC
+EXEC --> MGR: Validation result
+deactivate EXEC
+
+== Sharpe Ratio Gating ==
+MGR -> TDR: Check Sharpe threshold
+activate TDR
+alt Sharpe < SharpePauseThreshold
+    TDR -> TDR: Set PauseUntil timestamp
+    note right
+      Pause for configured duration
+      ExecGuards.PauseDurationOnBreach
+    end note
+    TDR --> MGR: Skip decision cycle
+else Sharpe OK
+    TDR --> MGR: Continue execution
+end
+deactivate TDR
+
+@enduml

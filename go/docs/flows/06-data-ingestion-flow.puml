@@ -1,0 +1,72 @@
+@startuml Data Ingestion Flow
+!theme plain
+
+participant "Manager" as MGR
+participant "Market Ingester" as MING
+participant "Exchange Ingester" as EING
+participant "Market Provider" as MKT
+participant "Exchange Provider" as EXC
+database "PostgreSQL" as DB
+
+== Manager Initialization ==
+MGR -> MING: Create market ingester
+MGR -> EING: Create exchange ingester
+
+== Manager Run Loop ==
+MGR -> MING: Run(ctx)
+activate MING
+& MGR -> EING: Run(ctx)
+activate EING
+
+== Market Data Ingestion (Background) ==
+loop Every N seconds
+    MING -> MKT: ListSymbols()
+    MKT --> MING: Symbol[]
+
+    loop For each active symbol
+        MING -> MKT: GetKlines(symbol, interval)
+        MKT --> MING: Kline[]
+
+        MING -> MING: Calculate indicators
+        note right
+          - EMA (20, 50, 200)
+          - RSI (7, 14)
+          - MACD
+          - ATR
+        end note
+
+        MING -> DB: UpsertPriceTicks(symbol, data)
+        MING -> DB: UpdateMarketAssetContext(symbol)
+    end
+
+    MING -> DB: UpdatePriceLatest(symbols)
+end
+
+== Exchange Data Ingestion (Background) ==
+loop Every N seconds
+    EING -> EXC: GetAccountState()
+    EXC --> EING: AccountState
+
+    EING -> DB: UpsertAccountEquitySnapshot()
+
+    EING -> EXC: GetPositions()
+    EXC --> EING: Position[]
+
+    loop For each position
+        EING -> DB: UpsertPosition(position)
+    end
+
+    alt Check open orders
+        EING -> EXC: GetOpenOrders()
+        EXC --> EING: OrderStatus[]
+        EING -> DB: SyncOrderStatus(orders)
+    end
+end
+
+== Shutdown ==
+MGR -> MING: Stop(ctx)
+deactivate MING
+MGR -> EING: Stop(ctx)
+deactivate EING
+
+@enduml
