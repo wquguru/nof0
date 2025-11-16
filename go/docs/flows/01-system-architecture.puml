@@ -86,9 +86,9 @@ package "Domain Layer" #FAFAFA {
         }
 
         [TradingPosition] <<Entity>> #FFF3E0
-        [TraderConfig] <<Entity>> #E3F2FD as TradingConfig
-        [RiskParameters] <<Value Object>> #E8F5E9 as RiskParams
-        [ExecGuards] <<Value Object>> #E8F5E9 as ExecGuards
+        [TraderConfig] as TradingConfig <<Entity>> #E3F2FD
+        [RiskParameters] as RiskParams <<Value Object>> #E8F5E9
+        [ExecGuards] as ExecGuards <<Value Object>> #E8F5E9
 
         Trader --> TradingPosition : manages
         Trader --> TradingConfig : references
@@ -121,7 +121,7 @@ package "Domain Layer" #FAFAFA {
         [Decision] <<Value Object>> #E8F5E9
         [Context] <<DTO>> #FCE4EC
         [Validator] <<Domain Service>> #E8F5E9
-        [PromptRenderer] <<Domain Service>> #E8F5E9 as Renderer
+        [PromptRenderer] as Renderer <<Domain Service>> #E8F5E9
 
         Executor --> Decision : produces
         Executor --> Context : consumes
@@ -190,34 +190,40 @@ package "Infrastructure Layer" #FAFAFA {
     ' --------------------------------------------------------------------------
     package "Ports" #FFF9C4 {
 
-        interface "IExchangeProvider" <<Port>> as IExchange {
-            + GetAccount()
-            + GetPositions()
-            + PlaceOrder()
-            + ClosePosition()
-            + SetLeverage()
-        }
-
-        interface "IMarketProvider" <<Port>> as IMarket {
-            + GetSnapshot()
-            + BatchSnapshot()
-            + GetSymbols()
-            + GetKlines()
-        }
-
-        interface "ILLMClient" <<Port>> as ILLM {
-            + Call()
-            + StreamCall()
-        }
-
-        interface "IRepository" <<Port>> as IRepo {
-            + SaveTraderState()
-            + LoadTraderState()
-            + RecordDecisionCycle()
-            + RecordTrade()
-        }
-
+        () "IExchangeProvider" as IExchange
         note right of IExchange
+          <b>Exchange Port</b>
+          • GetAccount()
+          • GetPositions()
+          • PlaceOrder()
+          • ClosePosition()
+          • SetLeverage()
+        end note
+
+        () "IMarketProvider" as IMarket
+        note right of IMarket
+          <b>Market Port</b>
+          • GetSnapshot()
+          • BatchSnapshot()
+          • GetSymbols()
+          • GetKlines()
+        end note
+
+        () "ILLMClient" as ILLM
+        note right of ILLM
+          <b>LLM Port</b>
+          • Call()
+          • StreamCall()
+        end note
+
+        () "IRepository" as IRepo
+        note bottom of IRepo
+          <b>Repository Port</b>
+          • SaveTraderState()
+          • LoadTraderState()
+          • RecordDecisionCycle()
+          • RecordTrade()
+
           <b>Ports (Interfaces)</b>
 
           Define contracts between
@@ -233,10 +239,10 @@ package "Infrastructure Layer" #FAFAFA {
     ' --------------------------------------------------------------------------
     package "Adapters" #FFE0B2 {
 
-        [HyperliquidExchange] <<Adapter>> #FFE0B2 as HLExchange
-        [HyperliquidMarket] <<Adapter>> #FFE0B2 as HLMarket
+        [HyperliquidExchange] as HLExchange <<Adapter>> #FFE0B2
+        [HyperliquidMarket] as HLMarket <<Adapter>> #FFE0B2
         [LLMClient] <<Adapter>> #FFE0B2
-        [PostgresRepository] <<Adapter>> #FFE0B2 as PGRepo
+        [PostgresRepository] as PGRepo <<Adapter>> #FFE0B2
 
         HLExchange ..|> IExchange : implements
         HLMarket ..|> IMarket : implements
