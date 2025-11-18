@@ -220,7 +220,7 @@ note right of MainConfig NOTE_CONFIG
 
   <b>Environment variables:</b>
   • ${Postgres__DataSource}
-  • ${Cache__0__Host}
+  • ${Cache__0__Host}  ← Cache is an **array**
   • ${Cache__0__Pass}
   • ${Cache__0__Tls}
 
@@ -229,6 +229,11 @@ note right of MainConfig NOTE_CONFIG
      → Loaded immediately from nof0.yaml
   2. **Lazy**: Domain configs (LLM, Executor, Manager)
      → Section[T] pattern with separate YAML files
+
+  <b><&warning> Validation Rules:</b>
+  • Env: "dev" | "test" | "prod"
+  • Port: [1024, 65535]
+  • Cache: Array with at least 1 entry
 end note
 
 note bottom of "Section[T]" NOTE_VALUE
@@ -260,6 +265,11 @@ note right of PostgresConf NOTE_VALUE
   MaxOpen: Active connections (default 10)
   MaxIdle: Idle pool size (default 5)
   MaxLifetime: Recycle period (default 5m)
+
+  <b><&warning> Validation Rules:</b>
+  • MaxOpen: [1, 100]
+  • MaxIdle: [1, MaxOpen]
+  • MaxLifetime: > 0
 end note
 
 note right of CacheTTL NOTE_VALUE
@@ -271,6 +281,10 @@ note right of CacheTTL NOTE_VALUE
   • Short (10s): Fast-changing (prices)
   • Medium (60s): Lists (trades)
   • Long (300s): Aggregations
+
+  <b><&warning> Validation Rules:</b>
+  • All values > 0
+  • Short < Medium < Long
 end note
 
 note right of LLMConfig NOTE_CONFIG
@@ -288,6 +302,12 @@ note right of LLMConfig NOTE_CONFIG
   • Daily limit: 500k tokens
   • Alert at 80% usage
   • Block requests when limit hit
+
+  <b><&warning> Validation Rules:</b>
+  • Timeout: [1s, 300s]
+  • MaxRetries: [0, 10]
+  • Models: At least 1 model defined
+  • DefaultModel: Must exist in Models map
 end note
 
 note right of BudgetConfig NOTE_VALUE
@@ -318,6 +338,15 @@ note right of ExecutorConfig NOTE_CONFIG
   • Altcoins: 10x max leverage
   • Min confidence: 75%
   • Min R:R ratio: 3.0
+
+  <b><&warning> Validation Rules:</b>
+  • MajorCoinLeverage: [1, 125]
+  • AltcoinLeverage: [1, 125]
+  • MinConfidence: [0, 100]
+  • MinRiskReward: >= 0
+  • MaxPositions: [1, 20]
+  • DecisionInterval: >= 30s
+  • MaxConcurrentDecisions: [1, 10]
 end note
 
 ' ============================================

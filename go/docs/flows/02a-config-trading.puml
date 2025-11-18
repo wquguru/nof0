@@ -271,12 +271,28 @@ note right of TraderConfig NOTE_ENTITY
     (executor's decision prompt)
 
   <b><&cart> Execution:</b>
-  • OrderStyle: market_ioc/limit
+  • OrderStyle: "market_ioc" | "limit_ioc"
   • MarketIOCSlippageBps: 75 = 0.75%
 
-  <b><&book> Journal:</b>
+  <b><&warning> Validation Rules:</b>
+  • ID: Non-empty string
+  • OrderStyle: "market_ioc" | "limit_ioc"
+  • MarketIOCSlippageBps: [0, 1000]
+  • DecisionInterval: >= 30s
+  • AllocationPct: (0.0, 1.0]
+
+  <b><&book> Journal (WAL):</b>
   • JournalEnabled: Enable write-ahead log
   • JournalDir: Log file directory
+
+  <b><&info> Journal Feature:</b>
+  • **Purpose**: Write-ahead log for decisions
+  • **Format**: Append-only decision records
+  • **Use cases**:
+    - Audit trail for compliance
+    - Replay capability for testing
+    - Disaster recovery
+  • **Performance**: Async writes, no blocking
 
   <b><&play-circle> Lifecycle:</b>
   • AutoStart: Start on boot
@@ -294,8 +310,13 @@ note right of RiskParameters NOTE_VALUE
   • MaxMarginUsagePct: Total margin cap
 
   <b>Leverage by asset class:</b>
-  • MajorCoinLeverage: BTC, ETH
-  • AltcoinLeverage: Others
+  • MajorCoinLeverage: BTC, ETH (Major Coins)
+  • AltcoinLeverage: All others (Altcoins)
+
+  <b><&tags> Symbol Classification:</b>
+  • **Major Coins**: BTC, ETH
+  • **Altcoins**: All other symbols
+  • Classification affects leverage limits
 
   <b>Decision quality gates:</b>
   • MinRiskRewardRatio: Expected return/risk
@@ -308,6 +329,15 @@ note right of RiskParameters NOTE_VALUE
   <b>Note:</b> Stop/Take profit prices are
   determined by LLM decision output,
   not configured here.
+
+  <b><&warning> Validation Rules:</b>
+  • MaxPositions: [1, 20]
+  • MaxPositionSizeUSD: > 0
+  • MaxMarginUsagePct: (0.0, 1.0]
+  • MajorCoinLeverage: [1, 125]
+  • AltcoinLeverage: [1, 125]
+  • MinRiskRewardRatio: >= 0
+  • MinConfidence: [0, 100]
 end note
 
 note bottom of ExecGuards NOTE_VALUE
@@ -333,6 +363,16 @@ note bottom of ExecGuards NOTE_VALUE
   <b><&info> Feature toggles:</b>
   *bool = nil means default enabled
   Set to false to explicitly disable
+
+  <b><&warning> Validation Rules:</b>
+  • MaxNewPositionsPerCycle: [1, 10]
+  • CandidateLimit: >= 1
+  • LiquidityThresholdUSD: >= 0
+  • MaxMarginUsagePct: (0.0, 1.0]
+  • Value bands: Min < Max
+  • CooldownAfterClose: >= 0
+  • SharpePauseThreshold: [-5.0, 10.0]
+  • PauseDurationOnBreach: > 0
 end note
 
 note bottom of MarketConfig NOTE_CONFIG
