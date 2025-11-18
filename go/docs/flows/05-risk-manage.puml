@@ -67,11 +67,65 @@ loop For each decision
 
     == Margin Usage Guard ==
     alt MarginUsageGuard enabled
+        note right
+          **C3: Concurrent Margin Control**
+          Critical for multi-trader safety
+        end note
+
+        EXEC -> EXEC: START TRANSACTION (or acquire lock)
+        note right
+          **Concurrency control options**:
+          1. Database row-level lock:
+             SELECT available_margin FOR UPDATE
+          2. Distributed lock (Redis):
+             SETNX margin_lock_{account} 1 EX 5
+          3. CAS (Compare-And-Swap):
+             UPDATE WHERE version = expected_version
+        end note
+
+        EXEC -> EXEC: Read available_margin (with lock)
         EXEC -> EXEC: Calculate new margin usage
+
         alt Margin would exceed limit
+            EXEC -> EXEC: ROLLBACK / Release lock
             EXEC -> EXEC: Return error
-            note right: "margin usage would exceed limit"
+            note right
+              "margin usage would exceed limit"
+              Lock released, other traders can proceed
+            end note
+
+        else Margin OK
+            EXEC -> EXEC: Deduct required margin atomically
+            note right
+              UPDATE accounts
+              SET available_margin = available_margin - required
+              WHERE account_id = ? AND available_margin >= required
+            end note
+
+            EXEC -> EXEC: COMMIT / Release lock
+
+            alt Update affected 0 rows (race condition detected)
+                EXEC -> EXEC: Return error
+                note right
+                  **Race condition handled**:
+                  Another trader consumed margin
+                  between check and update
+                end note
+            else Update succeeded
+                EXEC -> EXEC: Continue validation
+                note right
+                  Margin successfully reserved
+                  for this order
+                end note
+            end
         end
+
+        note right
+          **Performance consideration**:
+          - Lock duration target: < 100ms
+          - Timeout if lock not acquired in 200ms
+          - Fail fast to avoid blocking other traders
+        end note
     end
 
     == Liquidity Guard ==
@@ -128,16 +182,67 @@ deactivate EXEC
 == Sharpe Ratio Gating ==
 MGR -> TDR: Check Sharpe threshold
 activate TDR
+
+note right
+  **M5: Sharpe Calculation Parameters**
+  (Should be defined in config)
+
+  Recommended settings:
+  - SharpeCalculationWindow: 30d
+  - SharpeMinSampleSize: 20 trades
+  - SharpePauseThreshold: 0.5
+  - SharpePauseDuration: 24h
+
+  **Calculation method**:
+  Sharpe = mean(returns) / stddev(returns) * sqrt(252)
+  - Window: last 30 days
+  - Min sample: at least 20 closed trades
+  - If insufficient data, default to 1.0 (allow trading)
+end note
+
 alt Sharpe < SharpePauseThreshold
     TDR -> TDR: Set PauseUntil timestamp
     note right
-      Pause for configured duration
-      ExecGuards.PauseDurationOnBreach
+      **Performance Gating Triggered**:
+      - Pause duration: ExecGuards.PauseDurationOnBreach
+      - State change: Running → SharpeGated
+      - All decisions rejected until pause expires
+      - Alert operator for review
+
+      **Auto-resume**:
+      - After pause duration expires
+      - Sharpe recalculated on next cycle
+      - If still low, pause again
     end note
     TDR --> MGR: Skip decision cycle
-else Sharpe OK
+
+else Sharpe OK (or insufficient data)
     TDR --> MGR: Continue execution
+    note right
+      Sufficient performance or
+      insufficient sample to judge
+    end note
 end
 deactivate TDR
+
+note over MGR, TDR
+  **Risk Management Summary**:
+
+  **6-Layer Guards** (executed in order):
+  1. MaxPositions (O(1))
+  2. Margin Usage (O(1), with concurrency control)
+  3. Liquidity (O(1), market data check)
+  4. Leverage (O(1), exchange constraints)
+  5. Value Band (O(1), equity-based sizing)
+  6. Cooldown (O(1), in-memory map lookup)
+
+  **Performance Gating** (separate check):
+  - Sharpe Ratio threshold enforcement
+  - Trader-level pause mechanism
+
+  **Concurrency Safety**:
+  - Margin usage requires locking (C3)
+  - Other guards are stateless or read-only
+end note
 
 @enduml

@@ -49,6 +49,8 @@ together {
     + <&clock> UpdateInterval: duration = 15s
     + <&bell> AlertWebhook: string
     + <&dashboard> MetricsExporter: string = "prometheus"
+    + <&pulse> RiskRunnerInterval: duration = 1s
+    + <&timer> MaxCheckLatency: duration = 500ms
   }
 }
 
@@ -155,6 +157,8 @@ together {
     --
     + <&graph> SharpePauseThreshold: float64
     + <&timer> PauseDurationOnBreach: duration
+    + <&calendar> SharpeCalculationWindow: duration = 30d
+    + <&list-rich> SharpeMinSampleSize: int = 20
   }
 }
 

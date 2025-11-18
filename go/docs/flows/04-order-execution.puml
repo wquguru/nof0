@@ -49,9 +49,36 @@ alt Action = close_long/close_short
       - Expected vs actual qty
     end note
 
-    MGR -> TDR: Update Cooldown[symbol]
+    MGR -> TDR: Update Cooldown[symbol] (in-memory)
+
+    note right
+      **H4: Cooldown Persistence**
+      Must persist to survive restart
+    end note
+
     MGR -> DB: UpsertCooldown(record)
-    note right: Best-effort persistence
+    activate DB
+    DB --> MGR: Result
+    deactivate DB
+
+    alt DB write failed
+        MGR -> MGR: Log error: Cooldown persistence failed
+        MGR -> MGR: Add to retry queue
+
+        note right
+          **Retry strategy**:
+          - Max 3 retries with exponential backoff
+          - If all fail, log CRITICAL
+          - Cooldown still enforced in-memory
+          - Manual reconciliation may be needed on restart
+        end note
+
+        MGR -> MGR: Schedule async retry
+    else DB write succeeded
+        MGR -> MGR: Confirm cooldown persisted
+        note right: Safe to restart without losing cooldown
+    end
+
     MGR -> MGR: recordPositionEvent(CLOSE)
     MGR -> MGR: releaseVirtualPosition()
 
@@ -81,6 +108,36 @@ else Action = open_long/open_short
     alt Entry price not provided
         MGR -> MKT: Snapshot(symbol)
         MKT --> MGR: Current price + timestamp
+
+        MGR -> MGR: age = now() - snap.Timestamp
+        note right
+          **H3: Price Staleness Check**
+          Critical for execution quality
+        end note
+
+        alt age > MaxAllowedAge (e.g., 2s)
+            MGR -> MGR: Log warning: Stale price
+
+            alt age > CriticalAge (e.g., 5s)
+                MGR -> MGR: Reject order
+                note right
+                  **Price too stale, abort**:
+                  - Market may have moved significantly
+                  - Refetch or skip this cycle
+                  - Severity: CRITICAL
+                end note
+                MGR --> MGR: Return error(stale_price)
+
+            else Moderate staleness (2-5s)
+                MGR -> MGR: Widen slippage tolerance
+                note right
+                  **Conservative execution**:
+                  MarketIOCSlippageBps *= 1.5
+                  Compensate for potential price movement
+                end note
+            end
+        end
+
         MGR -> MGR: price = snap.Price.Last
         MGR -> MGR: Log snapshot timestamp
         note right
@@ -88,6 +145,7 @@ else Action = open_long/open_short
           - Snapshot time
           - Price source
           - Age of data
+          - Staleness action taken
         end note
     end
 
@@ -153,11 +211,53 @@ else Action = open_long/open_short
 
         alt Stop-loss/Take-profit supported
             MGR -> EXC: SetStopLoss(symbol, side, qty, sl)
-            MGR -> EXC: SetTakeProfit(symbol, side, qty, tp)
+            activate EXC
+            EXC --> MGR: SL Response
+            deactivate EXC
+
             note right
-              Best-effort, errors ignored
-              Consider async monitoring
+              **H2: Stop-Loss Protection**
+              Critical for position safety
             end note
+
+            alt SL set failed
+                MGR -> MGR: Log CRITICAL error
+                MGR -> MGR: Increment SL failure counter
+
+                alt SL failure count > MaxSLRetries (3)
+                    MGR -> MGR: Log EMERGENCY: Cannot set SL
+                    MGR -> EXC: ClosePosition(symbol)
+                    note right
+                      **Fail-safe mechanism**:
+                      If cannot set SL after retries,
+                      close position immediately.
+
+                      Better miss profit than risk loss.
+                      Alert operator immediately.
+                    end note
+
+                else Retry allowed
+                    MGR -> MGR: Schedule async SL retry (1s later)
+                    note right: Background task will retry
+                end
+
+            else SL set successfully
+                MGR -> DB: RecordStopLoss(position_id, sl_order_id)
+                MGR -> MGR: Start SL monitoring task
+                note right: RiskRunner will verify SL active
+            end
+
+            MGR -> EXC: SetTakeProfit(symbol, side, qty, tp)
+            activate EXC
+            EXC --> MGR: TP Response
+            deactivate EXC
+
+            alt TP set failed
+                MGR -> MGR: Log warning (TP less critical than SL)
+                MGR -> MGR: Schedule async TP retry
+            else TP set successfully
+                MGR -> DB: RecordTakeProfit(position_id, tp_order_id)
+            end
         end
 
         MGR -> MGR: recordPositionEvent(OPEN)
@@ -169,8 +269,10 @@ else Action = open_long/open_short
 
     else Order Partially Filled (IOC)
         MGR -> MGR: Log partial fill
+        MGR -> MGR: actualQty = resp.FilledQty
+
         note right
-          **Partial Fill Handling**:
+          **M3: Partial Fill Handling**:
           - IOC order partially filled
           - Expected qty: X
           - Actual filled qty: Y < X
@@ -180,10 +282,43 @@ else Action = open_long/open_short
           - Record actual fill qty
           - No retry for unfilled portion
           - Adjust position size accordingly
+          - ✅ Set SL/TP based on ACTUAL qty
         end note
 
         MGR -> MGR: recordPositionEvent(OPEN, actualQty)
         MGR -> MGR: assignVirtualPosition(actualQty)
+
+        alt Stop-loss/Take-profit supported
+            note right
+              **Critical**: Use actualQty, not expectedQty
+              Protection must match actual exposure
+            end note
+
+            MGR -> EXC: SetStopLoss(symbol, side, actualQty, sl)
+            activate EXC
+            EXC --> MGR: SL Response
+            deactivate EXC
+
+            alt SL set failed
+                MGR -> MGR: Log CRITICAL error
+                MGR -> EXC: ClosePosition(symbol)
+                note right
+                  Fail-safe: Close partial position
+                  if cannot protect with SL
+                end note
+            else SL set successfully
+                MGR -> DB: RecordStopLoss(position_id, sl_order_id)
+            end
+
+            MGR -> EXC: SetTakeProfit(symbol, side, actualQty, tp)
+            activate EXC
+            EXC --> MGR: TP Response
+            deactivate EXC
+
+            alt TP set successfully
+                MGR -> DB: RecordTakeProfit(position_id, tp_order_id)
+            end
+        end
 
     else Order Failed (Rejected)
         MGR -> MGR: Log order failure
@@ -229,20 +364,32 @@ note over MGR, DB
      - Comprehensive structured logging
      - Audit trail for debugging
 
-  2. Best-effort approach
-     - Leverage update: ignored if fails
-     - SL/TP setup: async monitoring
-     - Cooldown persist: non-blocking
+  2. ✅ Enhanced Risk Protection (2025-11-18)
+     - **H3**: Price staleness check (reject if >5s old)
+     - **H2**: Stop-loss failure → protective close
+     - **M3**: Partial fills use actual qty for SL/TP
+     - **H4**: Cooldown persistence with retry queue
 
-  3. Natural guarantees
+  3. Fail-safe mechanisms
+     - Cannot set SL → close position immediately
+     - Stale price → reject order or widen slippage
+     - Partial fill → SL based on actual exposure
+
+  4. Natural guarantees
      - CLOID provides deduplication
      - Exchange is source of truth
      - Allow eventual consistency
 
-  4. Focus areas
+  5. Critical vs Best-effort
+     - **Critical**: Stop-loss setting (retries + fail-safe)
+     - **Best-effort**: Take-profit, leverage update
+     - **Async retry**: Cooldown persistence
+
+  6. Focus areas
      - Price snapshot timestamp tracking
      - Order response validation
      - Partial fill detection
+     - Stop-loss confirmation
 end note
 
 @enduml
