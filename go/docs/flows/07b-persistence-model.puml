@@ -127,6 +127,44 @@ package "Manager Module" #FAFAFA {
         ON (trader_id, event_at DESC)
     end note
 
+    entity "trader_runtime_state" as TraderRuntimeState <<State>> #FFF3E0 {
+        * trader_id : TEXT <<PK>> <<FK>>
+        --
+        state : TEXT CHECK(running|paused|stopped|sharpe_gated)
+        --
+        last_decision_at : TIMESTAMPTZ
+        pause_until : TIMESTAMPTZ
+        --
+        ** Performance & Allocation (JSONB) **
+        detail : JSONB
+        --
+        created_at : TIMESTAMPTZ
+        updated_at : TIMESTAMPTZ
+    }
+
+    note right of TraderRuntimeState
+      <b>detail JSONB contains:</b>
+      - performance: PerformanceMetrics
+        • total_pnl, sharpe_ratio
+        • win_rate, max_drawdown
+      - resource_alloc: CashAllocation
+        • allocated_cash, reserved_cash
+        • available_cash
+      - cooldowns: map[symbol]cooldown_until
+
+      <b>State transitions:</b>
+      - Running → Paused/Stopped/SharpeGated
+      - Paused → Running/Stopped
+      - SharpeGated → Running/Stopped
+      - Stopped → (terminal state)
+
+      <b>Relationship:</b>
+      - 1:1 with trader_config
+      - Created on trader start
+      - Updated every decision cycle
+    end note
+
+    TraderConfig "1" -- "1" TraderRuntimeState : has state
     TraderConfig "1" -- "0..*" Position : configures
     Position "1" -- "0..*" Trade : has
 }
