@@ -1,0 +1,394 @@
+@startuml 01a-config-trading
+!theme vibrant
+skinparam backgroundColor #F8F9FA
+skinparam roundCorner 10
+skinparam shadowing true
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 80
+
+' ============================================
+' Color Palette
+' ============================================
+!define CONFIG_COLOR #4A90E2
+!define VALUE_OBJ_COLOR #50C878
+!define ENTITY_COLOR #F39C12
+!define NOTE_CONFIG #E3F2FD
+!define NOTE_VALUE #E8F5E9
+!define NOTE_ENTITY #FFF3E0
+
+skinparam defaultFontName "Segoe UI,Arial,sans-serif"
+skinparam defaultFontSize 11
+skinparam classFontSize 12
+skinparam classFontStyle bold
+
+title <size:18><b>Trading Business Configuration</b></size>\n<size:12><i>Manager, Trader, Risk Controls, Market & Exchange</i></size>
+
+' ============================================
+' Manager Configuration
+' ============================================
+together {
+  class ManagerConfig <<Configuration>> CONFIG_COLOR {
+    + <&cog> Manager: ManagerSettings
+    + <&eye> Monitoring: MonitoringConfig
+    + <&people> Traders: []TraderConfig
+  }
+
+  class ManagerSettings <<Value Object>> VALUE_OBJ_COLOR {
+    + <&ban> ExchangeProviderCloseCond: CloseCond
+    + <&ban> TraderCloseCond: CloseCond
+  }
+
+  class CloseCond <<Value Object>> VALUE_OBJ_COLOR {
+    + <&graph> PNLPercentage: float64 = 0.05
+    + <&warning> DrawdownPercentage: float64 = 0.5
+  }
+
+  class MonitoringConfig <<Value Object>> VALUE_OBJ_COLOR {
+    + <&clock> UpdateInterval: duration = 15s
+    + <&bell> AlertWebhook: string
+    + <&dashboard> MetricsExporter: string = "prometheus"
+  }
+}
+
+' ============================================
+' Trader Configuration (Core Entity)
+' ============================================
+class TraderConfig <<Entity>> ENTITY_COLOR {
+  <size:11><b>Identity</b></size>
+  --
+  + <&key> ID: string {PK}
+  + <&tags> Name: string
+  + <&dollar> ExchangeProvider: string
+  + <&graph> MarketProvider: string
+  ==
+  <size:11><b>Order Settings</b></size>
+  --
+  + <&cart> OrderStyle: OrderStyle = "market_ioc"
+  + <&move> MarketIOCSlippageBps: float64 = 75
+  ==
+  <size:11><b>Templates</b></size>
+  --
+  + <&document> PromptTemplate: string
+  + <&code> ExecutorTemplate: string
+  + <&star> Model: string
+  ==
+  <size:11><b>Scheduling</b></size>
+  --
+  + <&clock> DecisionInterval: duration
+  + <&resize-both> AllocationPct: float64
+  ==
+  <size:11><b>Operations</b></size>
+  --
+  + <&play-circle> AutoStart: bool = false
+  + <&book> JournalEnabled: bool = false
+  + <&folder> JournalDir: string
+  ==
+  <size:11><b>Risk & Guards</b></size>
+  --
+  + <&shield> RiskParams: RiskParameters
+  + <&lock-locked> ExecGuards: ExecGuards
+  ==
+  <size:11><b>Metadata</b></size>
+  --
+  + <&tag> Version: int64
+}
+
+' ============================================
+' Risk Parameters
+' ============================================
+together {
+  class RiskParameters <<Value Object>> VALUE_OBJ_COLOR {
+    <size:11><b>Position Limits</b></size>
+    --
+    + <&resize-both> MaxPositions: int
+    + <&dollar> MaxPositionSizeUSD: float64
+    + <&calculator> MaxMarginUsagePct: float64
+    ==
+    <size:11><b>Leverage by Asset Class</b></size>
+    --
+    + <&graph> MajorCoinLeverage: int
+    + <&chart-bar> AltcoinLeverage: int
+    ==
+    <size:11><b>Decision Quality Gates</b></size>
+    --
+    + <&shield> MinRiskRewardRatio: float64
+    + <&check> MinConfidence: int
+    ==
+    <size:11><b>Risk Controls</b></size>
+    --
+    + <&ban> StopLossEnabled: bool = true
+    + <&target> TakeProfitEnabled: bool = true
+  }
+
+  class ExecGuards <<Value Object>> VALUE_OBJ_COLOR {
+    <size:11><b>Per-Cycle Limits</b></size>
+    --
+    + <&plus> MaxNewPositionsPerCycle: int
+    + <&resize-both> CandidateLimit: int
+    ==
+    <size:11><b>Liquidity Guard</b></size>
+    --
+    + <&dashboard> LiquidityThresholdUSD: float64
+    + <&power-standby> EnableLiquidityGuard: *bool
+    ==
+    <size:11><b>Margin Usage Guard</b></size>
+    --
+    + <&calculator> MaxMarginUsagePct: float64
+    + <&power-standby> EnableMarginUsageGuard: *bool
+    ==
+    <size:11><b>Value Band Guard</b></size>
+    --
+    + <&arrow-thick-bottom> BTCETHMinEquityMultiple: float64
+    + <&arrow-thick-top> BTCETHMaxEquityMultiple: float64
+    + <&arrow-thick-bottom> AltMinEquityMultiple: float64
+    + <&arrow-thick-top> AltMaxEquityMultiple: float64
+    + <&power-standby> EnableValueBandGuard: *bool
+    ==
+    <size:11><b>Cooldown Guard</b></size>
+    --
+    + <&clock> CooldownAfterClose: duration
+    + <&power-standby> EnableCooldownGuard: *bool
+    ==
+    <size:11><b>Performance Gating</b></size>
+    --
+    + <&graph> SharpePauseThreshold: float64
+    + <&timer> PauseDurationOnBreach: duration
+  }
+}
+
+' ============================================
+' Market & Exchange Configuration
+' ============================================
+together {
+  class MarketConfig <<Configuration>> CONFIG_COLOR {
+    + <&star> Default: string = "hyperliquid_testnet"
+    + <&list> Providers: map[string]MarketProviderConfig
+  }
+
+  class MarketProviderConfig <<Value Object>> VALUE_OBJ_COLOR {
+    + <&tag> Type: string
+    + <&beaker> Testnet: bool
+    + <&timer> Timeout: duration = 8s
+    + <&timer> HTTPTimeout: duration = 10s
+    + <&loop-circular> MaxRetries: int = 3
+  }
+}
+
+together {
+  class ExchangeConfig <<Configuration>> CONFIG_COLOR {
+    + <&star> Default: string = "hyperliquid_testnet"
+    + <&list> Providers: map[string]ExchangeProviderConfig
+  }
+
+  class ExchangeProviderConfig <<Value Object>> VALUE_OBJ_COLOR {
+    + <&tag> Type: string
+    + <&key> PrivateKey: string
+    + <&home> MainAddress: string
+    + <&beaker> Testnet: bool
+    + <&timer> Timeout: duration = 30s
+    + <&briefcase> VaultAddress: string
+  }
+}
+
+' ============================================
+' Relationships
+' ============================================
+ManagerConfig *-- ManagerSettings : <color:blue><b>owns</b></color>
+ManagerConfig *-- MonitoringConfig : <color:blue><b>owns</b></color>
+ManagerConfig *-- "1..*" TraderConfig : <color:blue><b>traders</b></color>
+
+ManagerSettings *-- "exchange" CloseCond : <color:blue><b>exchange close cond</b></color>
+ManagerSettings *-- "trader" CloseCond : <color:blue><b>trader close cond</b></color>
+
+TraderConfig *-- RiskParameters : <color:blue><b>owns</b></color>
+TraderConfig *-- ExecGuards : <color:blue><b>owns</b></color>
+TraderConfig ..> ExchangeProviderConfig : <color:green><b>refs</b></color>
+TraderConfig ..> MarketProviderConfig : <color:green><b>refs</b></color>
+
+MarketConfig *-- "1..*" MarketProviderConfig : <color:blue><b>providers</b></color>
+ExchangeConfig *-- "1..*" ExchangeProviderConfig : <color:blue><b>providers</b></color>
+
+' ============================================
+' Cross-reference to Core
+' ============================================
+TraderConfig ..> "ModelConfig\n(from LLMConfig)" : <color:purple><b>model ref</b></color>
+TraderConfig ..> "ExecutorConfig\n(from Core)" : <color:purple><b>uses</b></color>
+
+' ============================================
+' Enhanced Notes
+' ============================================
+note right of ManagerConfig NOTE_CONFIG
+  <size:12><b><&people> Trader Management</b></size>
+  ----
+  **Source**: <font:monospace>etc/manager.yaml</font>
+  **Go struct**: <font:monospace>pkg/manager.Config</font>
+
+  <b>Global close conditions:</b>
+  • PNL threshold: 5%
+  • Drawdown threshold: 50%
+
+  <b>Monitoring:</b>
+  • Update interval: 15s
+  • Metrics: Prometheus format
+
+  <b>Supports multiple trader instances</b>
+  with per-trader risk profiles
+end note
+
+note right of CloseCond NOTE_VALUE
+  <size:12><b><&ban> Position Close Condition</b></size>
+  ----
+  **Go struct**: <font:monospace>pkg/manager.CloseCond</font>
+
+  PNLPercentage: Profit/loss threshold
+  DrawdownPercentage: Max drawdown limit
+
+  <b>Applied at two levels:</b>
+  1. ExchangeProvider level (all traders)
+  2. Individual Trader level
+end note
+
+note right of TraderConfig NOTE_ENTITY
+  <size:12><b><&person> Individual Trader Instance</b></size>
+  ----
+  **Go struct**: <font:monospace>pkg/manager.TraderConfig</font>
+
+  <b><&key> Identity:</b>
+  • ID: Unique identifier (PK)
+  • Name: Human-readable label
+
+  <b><&link-intact> Providers:</b>
+  • ExchangeProvider: Execution venue
+  • MarketProvider: Data source
+  • Model: LLM model name
+
+  <b><&document> Prompt templates:</b>
+  • PromptTemplate: System role
+    (manager's strategy prompt)
+  • ExecutorTemplate: User query
+    (executor's decision prompt)
+
+  <b><&cart> Execution:</b>
+  • OrderStyle: market_ioc/limit
+  • MarketIOCSlippageBps: 75 = 0.75%
+
+  <b><&book> Journal:</b>
+  • JournalEnabled: Enable write-ahead log
+  • JournalDir: Log file directory
+
+  <b><&play-circle> Lifecycle:</b>
+  • AutoStart: Start on boot
+  • Version: Config version (optimistic lock)
+end note
+
+note right of RiskParameters NOTE_VALUE
+  <size:12><b><&shield> Per-Trader Risk Limits</b></size>
+  ----
+  **Go struct**: <font:monospace>pkg/manager.RiskParameters</font>
+
+  <b>Position limits:</b>
+  • MaxPositions: Count limit
+  • MaxPositionSizeUSD: Dollar limit per position
+  • MaxMarginUsagePct: Total margin cap
+
+  <b>Leverage by asset class:</b>
+  • MajorCoinLeverage: BTC, ETH
+  • AltcoinLeverage: Others
+
+  <b>Decision quality gates:</b>
+  • MinRiskRewardRatio: Expected return/risk
+  • MinConfidence: LLM confidence score
+
+  <b>Risk controls:</b>
+  • StopLossEnabled: Auto-close on loss
+  • TakeProfitEnabled: Auto-close on profit
+
+  <b>Note:</b> Stop/Take profit prices are
+  determined by LLM decision output,
+  not configured here.
+end note
+
+note bottom of ExecGuards NOTE_VALUE
+  <size:12><b><&lock-locked> Execution Guards (Risk Gates)</b></size>
+  ----
+  **Go struct**: <font:monospace>pkg/manager.ExecGuards</font>
+  **Reference**: <font:monospace>05-risk-management-guards.puml</font>
+
+  <b><&plus> Per-cycle limits:</b>
+  • MaxNewPositionsPerCycle: Cap new opens
+  • CandidateLimit: Max decision candidates
+
+  <b><&shield> Guard types (sequential execution):</b>
+  1. <&drop> Liquidity guard: Min 24h volume
+  2. <&calculator> Margin usage guard: Total margin cap
+  3. <&resize-both> Value band guard: Position size within equity multiples
+  4. <&clock> Cooldown guard: Wait period after close
+
+  <b><&graph> Performance gating:</b>
+  • SharpePauseThreshold: Min Sharpe ratio
+  • PauseDurationOnBreach: Pause duration
+
+  <b><&info> Feature toggles:</b>
+  *bool = nil means default enabled
+  Set to false to explicitly disable
+end note
+
+note bottom of MarketConfig NOTE_CONFIG
+  <size:12><b><&graph> Market Data Providers</b></size>
+  ----
+  **Source**: <font:monospace>etc/market.yaml</font>
+  **Go struct**: <font:monospace>pkg/market.Config</font>
+
+  <b>Supported providers:</b>
+  • hyperliquid (mainnet)
+  • hyperliquid_testnet
+
+  <b>Timeout hierarchy:</b>
+  • Timeout: Per-API call (8s)
+  • HTTPTimeout: HTTP layer (10s)
+
+  <b>Default:</b> hyperliquid_testnet
+end note
+
+note bottom of ExchangeConfig NOTE_CONFIG
+  <size:12><b><&dollar> Exchange Execution Providers</b></size>
+  ----
+  **Source**: <font:monospace>etc/exchange.yaml</font>
+  **Go struct**: <font:monospace>pkg/exchange.Config</font>
+
+  <b>Provider types:</b>
+  • hyperliquid: Real execution
+  • sim: Paper trading (in-memory)
+
+  <b>Credentials (via env vars):</b>
+  • HYPERLIQUID_PRIVATE_KEY
+  • HYPERLIQUID_MAIN_ADDRESS
+  • HYPERLIQUID_VAULT_ADDRESS
+
+  <b>Default:</b> hyperliquid_testnet
+end note
+
+' ============================================
+' Legend
+' ============================================
+legend bottom right
+  <size:12><b>Legend</b></size>
+  ----
+  <#4A90E2> <<Configuration>>     | Top-level config entity
+  <#50C878> <<Value Object>>      | Immutable value type
+  <#F39C12> <<Entity>>             | Mutable entity with ID
+  ----
+  <color:blue><b>───▸</b></color> Composition (owns)
+  <color:green><b>- - -▸</b></color> Reference (lazy load)
+  <color:purple><b>- - -▸</b></color> Cross-diagram reference
+  ----
+  <b>Related Diagrams:</b>
+  • 01a-config-core.puml - Infrastructure configs
+  • 05-risk-management-guards.puml - Guard execution flow
+  • 07-trader-lifecycle.puml - Trader state machine
+  • 09a-ideal-domain-model.puml - Domain entities
+endlegend
+
+@enduml

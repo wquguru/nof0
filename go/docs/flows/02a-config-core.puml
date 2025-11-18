@@ -1,0 +1,340 @@
+@startuml 01a-config-core
+!theme vibrant
+skinparam backgroundColor #F8F9FA
+skinparam roundCorner 10
+skinparam shadowing true
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 80
+
+' ============================================
+' Color Palette
+' ============================================
+!define CONFIG_COLOR #4A90E2
+!define VALUE_OBJ_COLOR #50C878
+!define NOTE_CONFIG #E3F2FD
+!define NOTE_VALUE #E8F5E9
+
+skinparam defaultFontName "Segoe UI,Arial,sans-serif"
+skinparam defaultFontSize 11
+skinparam classFontSize 12
+skinparam classFontStyle bold
+
+title <size:18><b>Core Infrastructure Configuration</b></size>\n<size:12><i>Foundation Layer - Database, Cache, LLM, Executor</i></size>
+
+' ============================================
+' Main Configuration Entity
+' ============================================
+class MainConfig <<Configuration>> CONFIG_COLOR {
+  <size:11><b>Core Settings</b></size>
+  --
+  + <&tags> Name: string
+  + <&globe> Env: string = "test"
+  + <&home> Host: string
+  + <&fork> Port: int
+  + <&folder> DataPath: string = "../../mcp/data"
+  ==
+  <size:11><b>Infrastructure (Direct)</b></size>
+  --
+  + <&database> Postgres: PostgresConf
+  + <&flash> Cache: CacheConf
+  + <&clock> TTL: CacheTTL
+  + <&monitor> Logging: LoggingConf
+  ==
+  <size:11><b>Domain Sections (Lazy)</b></size>
+  --
+  + <&brain> LLM: Section[LLMConfig]
+  + <&cog> Executor: Section[ExecutorConfig]
+  + <&people> Manager: Section[ManagerConfig]
+  + <&dollar> Exchange: Section[ExchangeConfig]
+  + <&graph> Market: Section[MarketConfig]
+}
+
+class "Section[T]" <<Value Object>> VALUE_OBJ_COLOR {
+  <size:11><b>Lazy Loading Pattern</b></size>
+  --
+  + <&file> File: string
+  - <&code> data: *T
+  ==
+  <size:11><b>Operations</b></size>
+  --
+  + <&cog> Hydrate(baseDir): error
+  + <&eye> Get(): *T
+}
+
+' ============================================
+' Database & Cache Configuration
+' ============================================
+together {
+  class PostgresConf <<Value Object>> VALUE_OBJ_COLOR {
+    + <&link-intact> DataSource: string
+    + <&vertical-align-top> MaxOpen: int = 10
+    + <&battery-half> MaxIdle: int = 5
+    + <&timer> MaxLifetime: duration = 5m
+  }
+
+  class CacheConf <<Value Object>> VALUE_OBJ_COLOR {
+    + <&target> Host: string
+    + <&tag> Type: string
+    + <&lock-locked> Pass: string
+    + <&shield> Tls: bool
+  }
+
+  class CacheTTL <<Value Object>> VALUE_OBJ_COLOR {
+    + <&flash> Short: int = 10
+    + <&clock> Medium: int = 60
+    + <&calendar> Long: int = 300
+  }
+}
+
+together {
+  class LoggingConf <<Value Object>> VALUE_OBJ_COLOR {
+    + <&dashboard> SlowThreshold: SlowThresholdConf
+    + <&code> VerboseSQL: bool = false
+    + <&comment-square> VerboseLLM: bool = false
+  }
+
+  class SlowThresholdConf <<Value Object>> VALUE_OBJ_COLOR {
+    + <&data-transfer-download> SQL: int = 1000
+    + <&bolt> Redis: int = 500
+  }
+}
+
+' ============================================
+' LLM Configuration
+' ============================================
+together {
+  class LLMConfig <<Configuration>> CONFIG_COLOR {
+    <size:11><b>Connection</b></size>
+    --
+    + <&link-intact> BaseURL: string
+    + <&key> APIKey: string
+    + <&star> DefaultModel: string = "gpt-5"
+    ==
+    <size:11><b>Reliability</b></size>
+    --
+    + <&timer> Timeout: duration = 60s
+    + <&loop-circular> MaxRetries: int = 3
+    + <&bug> LogLevel: string = "info"
+    ==
+    <size:11><b>Advanced</b></size>
+    --
+    + <&list> Models: map[string]ModelConfig
+    + <&calculator> Budget: BudgetConfig
+  }
+
+  class ModelConfig <<Value Object>> VALUE_OBJ_COLOR {
+    + <&cloud> Provider: string
+    + <&tag> ModelName: string
+    + <&fire> Temperature: float64
+    + <&resize-width> MaxCompletionTokens: int
+    + <&arrow-circle-top> Priority: int
+    + <&dollar> CostTier: string
+  }
+
+  class BudgetConfig <<Value Object>> VALUE_OBJ_COLOR {
+    + <&warning> DailyTokenLimit: int = 500000
+    + <&bell> AlertThresholdPct: int = 80
+    + <&lock-locked> StrictEnforcement: bool = true
+    + <&calculator> CostPerMillionTokens: map[string]float64
+  }
+}
+
+' ============================================
+' Executor Configuration
+' ============================================
+together {
+  class ExecutorConfig <<Configuration>> CONFIG_COLOR {
+    <size:11><b>Risk Thresholds</b></size>
+    --
+    + <&graph> MajorCoinLeverage: int = 20
+    + <&chart-bar> AltcoinLeverage: int = 10
+    + <&check> MinConfidence: int = 75
+    + <&shield> MinRiskReward: float64 = 3.0
+    + <&resize-both> MaxPositions: int = 4
+    ==
+    <size:11><b>Timing</b></size>
+    --
+    + <&clock> DecisionInterval: duration = 3m
+    + <&timer> DecisionTimeout: duration = 60s
+    + <&fork> MaxConcurrentDecisions: int = 1
+    ==
+    <size:11><b>Security</b></size>
+    --
+    + <&people> AllowedTraderIDs: []string
+    + <&key> SigningKey: string
+    + <&wrench> Overrides: map[string]interface{}
+    ==
+    <size:11><b>Validation</b></size>
+    --
+    + <&document> PromptSchemaVersion: string = "v1.0.0"
+    + <&check-circle> PromptValidation: PromptValidationConfig
+    + <&check-circle> OutputValidation: OutputValidationConfig
+  }
+
+  class PromptValidationConfig <<Value Object>> VALUE_OBJ_COLOR {
+    + <&lock-locked> StrictMode: bool = true
+    + <&document> RequireVersionHeader: bool = true
+  }
+
+  class OutputValidationConfig <<Value Object>> VALUE_OBJ_COLOR {
+    + <&power-standby> Enabled: bool = true
+    + <&folder> SchemaPath: string
+    + <&warning> FailOnInvalid: bool = true
+  }
+}
+
+' ============================================
+' Relationships
+' ============================================
+' Direct ownership (Infrastructure)
+MainConfig *-down- PostgresConf : <color:blue><b>owns</b></color>
+MainConfig *-down- "1..*" CacheConf : <color:blue><b>owns</b></color>
+MainConfig *-down- CacheTTL : <color:blue><b>owns</b></color>
+MainConfig *-down- LoggingConf : <color:blue><b>owns</b></color>
+LoggingConf *-- SlowThresholdConf : <color:blue><b>owns</b></color>
+
+' Lazy loading via Section[T]
+MainConfig *-- "llm" "Section[T]" : <color:blue><b>owns</b></color>
+MainConfig *-- "executor" "Section[T]" : <color:blue><b>owns</b></color>
+"Section[T]" ..> LLMConfig : <color:green><b>hydrates to</b></color>
+"Section[T]" ..> ExecutorConfig : <color:green><b>hydrates to</b></color>
+
+' Domain config internal structures
+LLMConfig *-- "1..*" ModelConfig : <color:blue><b>models</b></color>
+LLMConfig *-- BudgetConfig : <color:blue><b>owns</b></color>
+
+ExecutorConfig *-- PromptValidationConfig : <color:blue><b>owns</b></color>
+ExecutorConfig *-- OutputValidationConfig : <color:blue><b>owns</b></color>
+ExecutorConfig ..> ModelConfig : <color:green><b>uses</b></color>
+
+' ============================================
+' Enhanced Notes
+' ============================================
+note right of MainConfig NOTE_CONFIG
+  <size:12><b><&file> Entry Point Configuration</b></size>
+  ----
+  **Source**: <font:monospace>etc/nof0.yaml</font>
+  **Go struct**: <font:monospace>internal/config.Config</font>
+
+  <b>Environment variables:</b>
+  • ${Postgres__DataSource}
+  • ${Cache__0__Host}
+  • ${Cache__0__Pass}
+  • ${Cache__0__Tls}
+
+  <b><&layers> Two-tier loading:</b>
+  1. **Direct**: Infrastructure configs (Postgres, Cache)
+     → Loaded immediately from nof0.yaml
+  2. **Lazy**: Domain configs (LLM, Executor, Manager)
+     → Section[T] pattern with separate YAML files
+end note
+
+note bottom of "Section[T]" NOTE_VALUE
+  <size:12><b><&code> Generic Lazy Loader</b></size>
+  ----
+  **Go struct**: <font:monospace>internal/config.Section[T]</font>
+
+  <b><&file> File field examples:</b>
+  • "llm.yaml" → Section[LLMConfig]
+  • "executor.yaml" → Section[ExecutorConfig]
+  • "manager.yaml" → Section[ManagerConfig]
+
+  <b><&cog> Hydration flow:</b>
+  1. Call Hydrate(baseDir) → reads File
+  2. YAML unmarshal into *T
+  3. Get() returns cached *T
+
+  <b>Benefits:</b>
+  • Modular config files
+  • On-demand loading
+  • Type-safe generic pattern
+end note
+
+note right of PostgresConf NOTE_VALUE
+  <size:12><b><&database> Database Connection Pool</b></size>
+  ----
+  **Go struct**: <font:monospace>internal/config.PostgresConf</font>
+
+  MaxOpen: Active connections (default 10)
+  MaxIdle: Idle pool size (default 5)
+  MaxLifetime: Recycle period (default 5m)
+end note
+
+note right of CacheTTL NOTE_VALUE
+  <size:12><b><&clock> Cache Expiration Policy</b></size>
+  ----
+  **Go struct**: <font:monospace>internal/config.CacheTTL</font>
+
+  <b>Usage by data type:</b>
+  • Short (10s): Fast-changing (prices)
+  • Medium (60s): Lists (trades)
+  • Long (300s): Aggregations
+end note
+
+note right of LLMConfig NOTE_CONFIG
+  <size:12><b><&brain> LLM Provider Configuration</b></size>
+  ----
+  **Source**: <font:monospace>etc/llm.yaml</font>
+  **Go struct**: <font:monospace>pkg/llm.Config</font>
+
+  <b>Model priority order:</b>
+  1. <&star> gpt-5 (high cost, priority 1)
+  2. <&star> claude-sonnet-4.5 (high cost, priority 2)
+  3. <&star> deepseek-chat (medium cost, priority 3)
+
+  <b><&calculator> Budget enforcement:</b>
+  • Daily limit: 500k tokens
+  • Alert at 80% usage
+  • Block requests when limit hit
+end note
+
+note right of BudgetConfig NOTE_VALUE
+  <size:12><b><&calculator> Token Budget Control</b></size>
+  ----
+  <b>Cost tracking per model:</b>
+  • gpt-5: $18.0/M tokens
+  • claude-sonnet-4.5: $16.0/M tokens
+  • deepseek-chat: $2.0/M tokens
+
+  <b>StrictEnforcement=true:</b>
+  Blocks requests exceeding daily limit
+end note
+
+note right of ExecutorConfig NOTE_CONFIG
+  <size:12><b><&cog> Decision Engine Configuration</b></size>
+  ----
+  **Source**: <font:monospace>etc/executor.yaml</font>
+  **Go struct**: <font:monospace>pkg/executor.Config</font>
+
+  <b><&check-circle> Validation pipeline:</b>
+  1. Schema version check
+  2. JSON schema validation
+  3. Business rule validation
+
+  <b><&shield> Risk thresholds:</b>
+  • Major coins: 20x max leverage
+  • Altcoins: 10x max leverage
+  • Min confidence: 75%
+  • Min R:R ratio: 3.0
+end note
+
+' ============================================
+' Legend
+' ============================================
+legend bottom right
+  <size:12><b>Legend</b></size>
+  ----
+  <#4A90E2> <<Configuration>>     | Top-level config entity
+  <#50C878> <<Value Object>>      | Immutable value type
+  ----
+  <color:blue><b>───▸</b></color> Composition (owns)
+  <color:green><b>- - -▸</b></color> Reference (lazy load)
+  ----
+  <b>Related Diagrams:</b>
+  • 01a-config-trading.puml - Trading business configs
+  • 08-component-dependencies.puml - Full dependency graph
+endlegend
+
+@enduml
