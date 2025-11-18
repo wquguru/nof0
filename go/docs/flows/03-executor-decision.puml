@@ -67,15 +67,76 @@ LLM -> LLM: callAPI() + parseStructuredOutput()
 alt Success
     LLM --> EXEC: ChatResponse + decisionContract
 
-else Error
-    LLM --> EXEC: error
+else Transient Error (timeout/5xx)
+    LLM --> EXEC: TransientError
     note right of EXEC
-      **P0: Missing retry logic**
-      Should handle:
-      - Transient (timeout/5xx): retry with backoff
-      - Rate limit (429): exponential backoff
-      - Fatal (401/400): fail immediately
+      **Retry Logic** (Exponential Backoff):
+      - Attempt 1: Immediate
+      - Attempt 2: Wait 1s, retry
+      - Attempt 3: Wait 2s, retry
+      - Max retries: 3 (from LLMConfig)
+
+      **Implementation**:
+      ```go
+      for i := 0; i < maxRetries; i++ {
+        resp, err := llm.Call(prompt)
+        if err == nil { return resp }
+        if !isTransient(err) { break }
+        time.Sleep(backoff(i))
+      }
+      ```
     end note
+
+    loop Retry with exponential backoff
+        EXEC -> EXEC: wait(backoff)
+        EXEC -> LLM: ChatStructured(request) [retry]
+        alt Retry Success
+            LLM --> EXEC: ChatResponse + decisionContract
+        else Still Failing
+            note right: Continue loop
+        end
+    end
+
+    alt All Retries Exhausted
+        LLM --> EXEC: PermanentError
+        EXEC ->> MGR: logError(llm_exhausted)
+        EXEC --> MGR: FullDecision{nil} + error
+    end
+
+else Rate Limit Error (429)
+    LLM --> EXEC: RateLimitError
+    note right of EXEC
+      **Rate Limit Handling**:
+      - Parse Retry-After header
+      - Wait specified duration
+      - Single retry attempt
+      - If still limited, fail
+    end note
+
+    EXEC -> EXEC: parseRetryAfter(headers)
+    EXEC -> EXEC: wait(retryAfter)
+    EXEC -> LLM: ChatStructured(request) [rate-limit retry]
+
+    alt Retry Success
+        LLM --> EXEC: ChatResponse + decisionContract
+    else Still Rate Limited
+        LLM --> EXEC: RateLimitError
+        EXEC ->> MGR: logError(rate_limit_exceeded)
+        EXEC --> MGR: FullDecision{nil} + error
+    end
+
+else Fatal Error (401/400/invalid)
+    LLM --> EXEC: FatalError
+    note right of EXEC
+      **Fatal Errors** (no retry):
+      - 401: Authentication failed
+      - 400: Invalid request
+      - Invalid API key
+      - Model not found
+
+      **Action**: Fail immediately
+    end note
+    EXEC ->> MGR: logError(llm_fatal)
     EXEC --> MGR: FullDecision{nil} + error
 end
 deactivate LLM

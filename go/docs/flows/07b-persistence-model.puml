@@ -76,14 +76,25 @@ package "Manager Module" #FAFAFA {
       <b>detail JSONB contains:</b>
       - quantity, entry_price
       - notional_usd, leverage
-      - unrealized_pnl
+      - unrealized_pnl (updated periodically)
       - stop_loss, take_profit
       - opened_at, closed_at
 
-      <b>Event Log Pattern:</b>
-      - Each open/close is a new row
-      - status = 'open' | 'closed'
-      - Immutable once created
+      <b>Hybrid Pattern (Event Log + Mutable State):</b>
+      - **Creation**: New row on position open
+      - **Updates**: Mutable while status='open'
+        • unrealized_pnl updated from market data
+        • stop_loss/take_profit can be adjusted
+        • quantity updated on partial fills
+      - **Closure**: Status changed to 'closed'
+        • Immutable after closure
+        • closed_at timestamp recorded
+      - **Rationale**: Balance between event sourcing
+        and performance (avoid excessive rows)
+
+      <b>Event Sourcing Alternative:</b>
+      For full audit trail, consider separate
+      'position_snapshots' table for history
 
       <b>Indexes:</b>
       idx_positions_trader_status

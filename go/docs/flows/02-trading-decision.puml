@@ -86,11 +86,50 @@ loop Every 3 seconds
           - Not sum(LLM calls)
           - **3x throughput improvement**
         end note
-        LLM --> EXEC: Decision
-        deactivate LLM
-        EXEC -> EXEC: validateSchema()
-        EXEC -> EXEC: validateRules()
-        EXEC --> MGR: Decision
+
+        alt LLM Success
+            LLM --> EXEC: Decision
+            deactivate LLM
+            EXEC -> EXEC: validateSchema()
+
+            alt Schema Valid
+                EXEC -> EXEC: validateRules()
+
+                alt Business Rules Valid
+                    EXEC --> MGR: Decision
+                else Business Rules Failed
+                    EXEC --> MGR: ValidationError
+                    note right of MGR
+                      **Error Recovery**:
+                      - Log validation failure
+                      - Skip this cycle
+                      - Continue with next trader
+                    end note
+                    MGR ->> DB: logError(validation)
+                end
+            else Schema Invalid
+                EXEC --> MGR: SchemaError
+                note right of MGR
+                  **Error Recovery**:
+                  - Log schema mismatch
+                  - Alert on prompt issues
+                  - Skip this cycle
+                end note
+                MGR ->> DB: logError(schema)
+            end
+        else LLM API Error
+            LLM --> EXEC: APIError (timeout/rate-limit)
+            deactivate LLM
+            EXEC --> MGR: LLMError
+            note right of MGR
+              **Error Recovery**:
+              - Retry with exponential backoff
+              - Fallback to secondary model
+              - Skip if retries exhausted
+            end note
+            MGR -> MGR: scheduleRetry()
+            MGR ->> DB: logError(llm_api)
+        end
         deactivate EXEC
 
         ' Execute decisions
@@ -100,23 +139,73 @@ loop Every 3 seconds
         loop For each decision
             alt Close Position
                 MGR -> EXC: ClosePosition(symbol)
-                EXC --> MGR: OrderResponse
-                MGR -> TDR1: SetCooldown(symbol)
-                note right of MGR
-                  **P1: Async Persistence**
-                  Fire-and-forget to avoid
-                  blocking next cycle
-                end note
-                MGR ->> DB: RecordTrade() [async]
+
+                alt Close Success
+                    EXC --> MGR: OrderResponse (filled)
+                    MGR -> TDR1: SetCooldown(symbol)
+                    note right of MGR
+                      **P1: Async Persistence**
+                      Fire-and-forget to avoid
+                      blocking next cycle
+                    end note
+                    MGR ->> DB: RecordTrade() [async]
+                else Close Failed
+                    EXC --> MGR: OrderError (rejected/timeout)
+                    note right of MGR
+                      **Error Recovery**:
+                      - Log failure details
+                      - Retry if transient (network)
+                      - Skip if permanent (insufficient balance)
+                      - Alert if critical
+                    end note
+                    MGR -> MGR: retryOrSkip()
+                    MGR ->> DB: logError(close_failed)
+                end
+
             else Open Position
                 MGR -> MGR: validateRisk()
-                MGR -> EXC: SetLeverage(symbol, leverage)
-                MGR -> EXC: PlaceOrder(order)
-                note right of EXC
-                  Price from batch snapshot cache
-                end note
-                EXC --> MGR: OrderResponse
-                MGR ->> DB: RecordTrade() [async]
+
+                alt Risk Check Pass
+                    MGR -> EXC: SetLeverage(symbol, leverage)
+
+                    alt Leverage Set Success
+                        MGR -> EXC: PlaceOrder(order)
+                        note right of EXC
+                          Price from batch snapshot cache
+                        end note
+
+                        alt Order Success
+                            EXC --> MGR: OrderResponse (filled)
+                            MGR ->> DB: RecordTrade() [async]
+                        else Order Failed
+                            EXC --> MGR: OrderError
+                            note right of MGR
+                              **Error Recovery**:
+                              - Log order failure
+                              - Check account state
+                              - Pause trader if repeated failures
+                            end note
+                            MGR -> MGR: checkFailureCount()
+                            MGR ->> DB: logError(order_failed)
+                        end
+                    else Leverage Set Failed
+                        EXC --> MGR: LeverageError
+                        note right of MGR
+                          **Error Recovery**:
+                          - Skip this decision
+                          - May indicate symbol not supported
+                        end note
+                        MGR ->> DB: logError(leverage_failed)
+                    end
+                else Risk Check Failed
+                    note right of MGR
+                      **Risk Guard Rejection**:
+                      - Violates risk limits
+                      - Skip this decision
+                      - Not an error (expected behavior)
+                    end note
+                    MGR -> MGR: skipDecision()
+                end
             end
         end
 

@@ -142,29 +142,69 @@ else Action = open_long/open_short
       Fallback to request params if parse fails
     end note
 
-    MGR -> MGR: Log order response
-    note right
-      Structured log:
-      - Order status (filled/resting/error)
-      - Fill price/qty
-      - Partial fill detection
-      - Response timestamp
-    end note
-
-    alt Stop-loss/Take-profit supported
-        MGR -> EXC: SetStopLoss(symbol, side, qty, sl)
-        MGR -> EXC: SetTakeProfit(symbol, side, qty, tp)
+    alt Order Fully Filled
+        MGR -> MGR: Log order response
         note right
-          Best-effort, errors ignored
-          Consider async monitoring
+          Structured log:
+          - Order status: filled
+          - Fill price/qty
+          - Execution timestamp
         end note
+
+        alt Stop-loss/Take-profit supported
+            MGR -> EXC: SetStopLoss(symbol, side, qty, sl)
+            MGR -> EXC: SetTakeProfit(symbol, side, qty, tp)
+            note right
+              Best-effort, errors ignored
+              Consider async monitoring
+            end note
+        end
+
+        MGR -> MGR: recordPositionEvent(OPEN)
+        MGR -> MGR: assignVirtualPosition()
+        note right
+          Use actual fillQty from response
+          Track position allocation per trader
+        end note
+
+    else Order Partially Filled (IOC)
+        MGR -> MGR: Log partial fill
+        note right
+          **Partial Fill Handling**:
+          - IOC order partially filled
+          - Expected qty: X
+          - Actual filled qty: Y < X
+          - Unfilled portion canceled
+
+          **Action**: Accept partial fill
+          - Record actual fill qty
+          - No retry for unfilled portion
+          - Adjust position size accordingly
+        end note
+
+        MGR -> MGR: recordPositionEvent(OPEN, actualQty)
+        MGR -> MGR: assignVirtualPosition(actualQty)
+
+    else Order Failed (Rejected)
+        MGR -> MGR: Log order failure
+        note right
+          **Failure Reasons**:
+          - Insufficient margin
+          - Symbol not found
+          - Invalid parameters
+          - Exchange rejection
+
+          **Error Recovery**:
+          - Log failure details
+          - Do NOT retry (risk double-fill)
+          - Report to Manager
+          - May trigger trader pause
+        end note
+
+        MGR ->> DB: logError(order_rejected)
+        MGR -> MGR: skipPositionAllocation()
+
     end
-    MGR -> MGR: recordPositionEvent(OPEN)
-    MGR -> MGR: assignVirtualPosition()
-    note right
-      Use actual fillQty from response
-      Track position allocation per trader
-    end note
 
 else Action = hold/wait
     MGR -> MGR: Skip execution
