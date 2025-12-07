@@ -125,7 +125,19 @@ package "Runtime State Domain" #FAFAFA {
         Running
         Paused
         Stopped
+        SharpeGated
     }
+
+    note right of TraderState
+      <b>State Machine Transitions</b>:
+      Running → {Paused, Stopped, SharpeGated}
+      Paused → {Running, Stopped}
+      SharpeGated → {Running, Stopped}
+      Stopped → {} (terminal)
+
+      ✅ Enhanced with SharpeGated state
+      for performance-based pausing
+    end note
 
     class TraderRuntimeState <<Entity>> #FFF3E0 {
         + TraderID : string
@@ -139,7 +151,26 @@ package "Runtime State Domain" #FAFAFA {
         --
         + IsCoolingDown(symbol Symbol) : bool
         + SetCooldown(symbol Symbol)
+        + GetCooldownRemaining(symbol Symbol) : Duration
     }
+
+    note right of TraderRuntimeState
+      <b>✅ Cooldown Policy</b>
+      Recommended enhancement from review:
+      Consider modeling as Value Object:
+
+      <code>
+      type CooldownPolicy struct {
+        cooldowns map[Symbol]Time
+        duration  Duration
+      }
+      </code>
+
+      Benefits:
+      • Immutability enforcement
+      • Easier to test
+      • Clear domain semantics
+    end note
 
     class PerformanceMetrics <<ValueObject>> #E8F5E9 {
         + TotalPnLUSD : float64
@@ -276,7 +307,7 @@ package "Decision Domain" #FAFAFA {
         Hold
     }
 
-    class DecisionCycle <<Entity>> #FFF3E0 {
+    class DecisionCycle <<Event>> #E8F5E9 {
         + ID : int64
         + TraderID : string
         + CycleNumber : int
@@ -286,6 +317,44 @@ package "Decision Domain" #FAFAFA {
         --
         + IsSuccess() : bool
     }
+
+    note right of DecisionCycle
+      <b>✅ Event Sourcing</b>
+      Changed from <<Entity>> to <<Event>>
+
+      Append-only, immutable log
+      Enables:
+      • Full audit trail
+      • State reconstruction (replay)
+      • Time travel debugging
+      • Compliance requirements
+    end note
+
+    class Trade <<Event>> #E8F5E9 {
+        + ID : int64
+        + TraderID : string
+        + PositionID : string
+        + Symbol : Symbol
+        + Side : Side
+        + Action : string
+        + Quantity : float64
+        + Price : float64
+        + NotionalUSD : float64
+        + PnLUSD : float64
+        + ExecutedAt : Time
+    }
+
+    note right of Trade
+      <b>✅ Trade Event</b>
+      Changed from <<Entity>> to <<Event>>
+
+      Immutable execution record
+      Each trade is a domain event
+      that can trigger:
+      • Performance metric updates
+      • Risk monitoring alerts
+      • Notification dispatch
+    end note
 
     Decision::Action --> Action
     FullDecision *-- "*" Decision
@@ -374,15 +443,21 @@ note right of Trader
 
   Responsibilities:
   - Lifecycle management
-  - State transitions
+  - State transitions (including SharpeGated)
   - Aggregating runtime state
   - Coordinating dependencies
+  - Publishing domain events
 
   <b>Aggregate Boundary:</b>
   - TraderRuntimeState
   - PerformanceMetrics
   - CashAllocation
   - Cooldowns
+
+  <b>✅ Review Enhancements</b>:
+  • Added SharpeGated state
+  • Event publishing capability
+  • Clearer boundary definition
 end note
 
 note right of Position

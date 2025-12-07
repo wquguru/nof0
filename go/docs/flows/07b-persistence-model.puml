@@ -18,7 +18,28 @@ legend top right
   |<<FK>>| Foreign Key |
   |<<UK>>| Unique Key |
   |<<IDX>>| Index |
+  |=====|
+  |<size:14><b>✅ P0-2 Enhancement</b></size> |
+  |Repository per Aggregate|
 endlegend
+
+note as RepositoryPattern
+  <b>✅ Repository Pattern Implementation</b>
+
+  Following DDD best practices, each aggregate
+  root has its own repository interface:
+
+  <b>ITraderRepository</b> → trader_config + trader_runtime_state
+  <b>IPositionRepository</b> → positions
+  <b>IDecisionCycleRepository</b> → decision_cycles
+  <b>ITradeRepository</b> → trades
+
+  Benefits:
+  • Type-safe operations
+  • Aggregate-specific queries
+  • Easier to test and mock
+  • Clear ownership boundaries
+end note
 
 ' ==============================================================================
 ' MODULE: manager - Trading Strategy Management
@@ -73,6 +94,13 @@ package "Manager Module" #FAFAFA {
     }
 
     note right of Position
+      <b>✅ IPositionRepository operations:</b>
+      • Save(position *Position) error
+      • FindByID(id) (*Position, error)
+      • FindByTraderID(traderID) ([]*Position, error)
+      • FindOpenPositions() ([]*Position, error)
+      • FindBySymbol(symbol) ([]*Position, error)
+
       <b>detail JSONB contains:</b>
       - quantity, entry_price
       - notional_usd, leverage
@@ -122,6 +150,12 @@ package "Manager Module" #FAFAFA {
     }
 
     note right of Trade
+      <b>✅ ITradeRepository operations:</b>
+      • Append(trade *Trade) error
+      • FindByPositionID(positionID) ([]*Trade, error)
+      • FindByTraderID(traderID, limit) ([]*Trade, error)
+      • FindBySymbol(symbol, from, to) ([]*Trade, error)
+
       <b>detail JSONB contains:</b>
       - order_type (market_ioc, limit_ioc)
       - quantity, price, notional
@@ -132,6 +166,11 @@ package "Manager Module" #FAFAFA {
       <b>Relationship:</b>
       - Multiple trades can relate to
         a single position
+
+      <b>✅ Append-only pattern:</b>
+      - Immutable once written
+      - No updates or deletes
+      - Perfect audit trail
 
       <b>Indexes:</b>
       idx_trades_trader_close_ts
@@ -154,6 +193,12 @@ package "Manager Module" #FAFAFA {
     }
 
     note right of TraderRuntimeState
+      <b>✅ ITraderRepository operations:</b>
+      • Save(trader *Trader) error
+      • FindByID(id) (*Trader, error)
+      • FindByState(state) ([]*Trader, error)
+      • Update(trader *Trader) error
+
       <b>detail JSONB contains:</b>
       - performance: PerformanceMetrics
         • total_pnl, sharpe_ratio
@@ -163,7 +208,7 @@ package "Manager Module" #FAFAFA {
         • available_cash
       - cooldowns: map[symbol]cooldown_until
 
-      <b>State transitions:</b>
+      <b>✅ State transitions (enhanced):</b>
       - Running → Paused/Stopped/SharpeGated
       - Paused → Running/Stopped
       - SharpeGated → Running/Stopped
@@ -173,6 +218,12 @@ package "Manager Module" #FAFAFA {
       - 1:1 with trader_config
       - Created on trader start
       - Updated every decision cycle
+
+      <b>✅ P0-3 Concurrent Control:</b>
+      When checking margin usage, use:
+      • SELECT ... FOR UPDATE (row lock)
+      • UPDATE ... WHERE available >= required
+      • Check affected rows for race condition
     end note
 
     TraderConfig "1" -- "1" TraderRuntimeState : has state
@@ -255,6 +306,12 @@ package "Executor/LLM Module" #FAFAFA {
     }
 
     note right of DecisionCycle
+      <b>✅ IDecisionCycleRepository operations:</b>
+      • Append(cycle *DecisionCycle) error
+      • FindByTraderID(traderID, limit) ([]*DecisionCycle, error)
+      • FindByCycleNumber(traderID, cycleNum) (*DecisionCycle, error)
+      • ReplayAll(traderID) ([]*DecisionCycle, error)
+
       <b>detail JSONB contains:</b>
       - prompt_digest
       - decisions: []Decision
@@ -263,10 +320,11 @@ package "Executor/LLM Module" #FAFAFA {
       - duration_ms
       - model_id, conversation_id
 
-      <b>Event Sourcing:</b>
+      <b>✅ Event Sourcing:</b>
       - Every decision cycle recorded
       - Can replay to rebuild state
       - Audit trail for analysis
+      - Support time-travel debugging
 
       <b>Indexes:</b>
       idx_decision_cycles_trader_executed_at_desc

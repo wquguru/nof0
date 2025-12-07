@@ -30,25 +30,39 @@ package "External Systems" #EEEEEE {
 }
 
 ' ==============================================================================
-' LAYER 1: Application Layer
+' LAYER 1: Application Layer (✅ P0-1: Split ManagerService)
 ' ==============================================================================
 package "Application Layer" #FAFAFA {
-    [ManagerService] <<Application>> #FCE4EC
-    [RiskRunner] <<Application>> #FCE4EC
+    [DecisionOrchestrator] <<Application>> #FCE4EC
+    [TraderLifecycleManager] <<Application>> #FCE4EC
+    [RiskMonitor] <<Application>> #FCE4EC
 }
 
-note right of ManagerService
+note right of DecisionOrchestrator
   <b>Decision Orchestration</b>
-  • Trader lifecycle management
-  • Decision cycle scheduling
-  • Transaction boundaries
+  ✅ Refactored from ManagerService
+  • Build execution context
+  • Coordinate Executor & Validator
+  • Manage transaction boundaries
+  • Sort & cap new positions
 end note
 
-note right of RiskRunner
+note right of TraderLifecycleManager
+  <b>Trader Lifecycle</b>
+  ✅ Refactored from ManagerService
+  • Register/unregister traders
+  • State machine transitions
+  • Config hot-reload
+  • Health monitoring
+end note
+
+note right of RiskMonitor
   <b>Risk Protection</b>
+  ✅ Replaces RiskRunner
   • Periodic risk monitoring
-  • Stop-loss / Take-profit
+  • Stop-loss / Take-profit triggers
   • Position health checks
+  • Subscribe to domain events
 end note
 
 ' ==============================================================================
@@ -104,12 +118,35 @@ package "Domain Layer" #FAFAFA {
     }
 
     package "Event Domain" #E8EAF6 {
-        [DecisionCycle] <<Entity>> #FFF3E0
-        [Trade] <<Entity>> #FFF3E0
+        [DecisionCycle] <<Event>> #E8F5E9
+        [Trade] <<Event>> #E8F5E9
+        () "DomainEvent" as DomainEvent
+        () "EventBus" as EventBus
 
         note bottom of DecisionCycle
+          ✅ Event Sourcing
           Append-only event log
           Enables replay & audit
+        end note
+
+        note right of EventBus
+          <b>Event-Driven Architecture</b>
+          • Publish/Subscribe pattern
+          • Decouples components
+          • Enables async processing
+        end note
+    }
+
+    package "Risk Context" #FFEBEE {
+        () "RiskGuard" as IRiskGuard
+        [GuardChain] <<Service>> #E8F5E9
+
+        note bottom of IRiskGuard
+          <b>Strategy Pattern</b>
+          • MaxPositionGuard
+          • MarginUsageGuard
+          • LiquidityGuard
+          • CooldownGuard
         end note
     }
 }
@@ -120,83 +157,113 @@ package "Domain Layer" #FAFAFA {
 package "Infrastructure Layer" #FAFAFA {
 
     package "Ports (Interfaces)" #FFF9C4 {
-        () "IExchangeProvider" as IExchange
+        () "IAccountProvider" as IAccount
+        () "IPositionProvider" as IPosition
+        () "IOrderProvider" as IOrder
         () "IMarketProvider" as IMarket
         () "ILLMClient" as ILLM
-        () "IRepository" as IRepo
+        () "ITraderRepository" as ITraderRepo
+        () "IPositionRepository" as IPositionRepo
+        () "IDecisionCycleRepository" as IDecisionRepo
+        () "ITradeRepository" as ITradeRepo
     }
 
-    note right of IExchange
-      <b>⚠️ Design Trade-off: Fat Interface</b>
+    note right of IAccount
+      <b>✅ P0-2: Interface Segregation</b>
 
-      **Current Methods** (~15+ methods):
-      • Account: GetAccount(), GetMarginSummary()
-      • Position: GetPositions(), ClosePosition()
-      • Order: PlaceOrder(), CancelOrder()
-      • Leverage: SetLeverage(), GetAssetIndex()
-      • Market: SetMarkPrice(), GetOrderbook()
+      Refactored from fat IExchangeProvider
+      into focused interfaces:
 
-      **ISP Violation**: Interface Segregation Principle
-      - Most consumers use only 3-5 methods
-      - Violates "clients should not depend on
-        methods they do not use"
+      <b>IAccountProvider</b>:
+      • GetAccount() (*Account, error)
+      • GetMarginSummary() (*Margin, error)
 
-      **Recommended Refactor** (future):
-      ```go
-      type IAccountProvider interface {
-        GetAccount() (*Account, error)
-        GetMarginSummary() (*Margin, error)
-      }
+      <b>IPositionProvider</b>:
+      • GetPositions() ([]Position, error)
+      • ClosePosition(symbol) error
 
-      type IPositionProvider interface {
-        GetPositions() ([]Position, error)
-        ClosePosition(symbol) error
-      }
+      <b>IOrderProvider</b>:
+      • PlaceOrder(order) error
+      • CancelOrder(orderID) error
+      • SetLeverage(symbol, lev) error
 
-      type IOrderProvider interface {
-        PlaceOrder(order) error
-        SetLeverage(symbol, lev) error
-      }
-      ```
+      Each interface has 2-5 focused methods
+      ✅ Follows ISP (Interface Segregation Principle)
+      ✅ Easier to test with smaller mocks
+      ✅ Clearer dependencies
+    end note
 
-      **Why Not Refactored Yet**:
-      1. **Implementation simplicity**: Single
-         adapter easier to maintain initially
-      2. **Cohesion**: All methods operate on
-         same exchange connection/state
-      3. **Performance**: Shared rate limiter,
-         connection pool, WebSocket stream
-      4. **Defer until pain**: Only 2 adapters
-         (Hyperliquid + Mock), cost/benefit low
+    note right of ITraderRepo
+      <b>✅ P0-2: Repository per Aggregate</b>
 
-      **Trigger for Refactor**:
-      - Adding 3+ exchange adapters
-      - Different teams own different parts
-      - Testing becomes cumbersome
+      Refactored from single IRepository:
+
+      <b>ITraderRepository</b>:
+      • Save(trader *Trader) error
+      • FindByID(id) (*Trader, error)
+      • FindByState(state) ([]*Trader, error)
+
+      <b>IPositionRepository</b>:
+      • Save(position *Position) error
+      • FindByTraderID(id) ([]*Position, error)
+      • FindOpenPositions() ([]*Position, error)
+
+      <b>IDecisionCycleRepository</b>:
+      • Append(cycle *DecisionCycle) error
+      • ReplayAll(traderID) ([]*DecisionCycle, error)
+
+      <b>ITradeRepository</b>:
+      • Append(trade *Trade) error
+      • FindByPositionID(id) ([]*Trade, error)
+
+      ✅ One repository per aggregate root
+      ✅ Type-safe (no interface{})
+      ✅ Optimized for domain queries
     end note
 
     package "Adapters (Implementations)" #FFE0B2 {
-        [HyperliquidExchange] as HLExchange <<Adapter>> #FFE0B2
+        [HyperliquidAccountAdapter] <<Adapter>> #FFE0B2
+        [HyperliquidPositionAdapter] <<Adapter>> #FFE0B2
+        [HyperliquidOrderAdapter] <<Adapter>> #FFE0B2
         [HyperliquidMarket] as HLMarket <<Adapter>> #FFE0B2
         [LLMClient] <<Adapter>> #FFE0B2
-        [PostgresRepository] as PGRepo <<Adapter>> #FFE0B2
+        [PostgresTraderRepo] <<Adapter>> #FFE0B2
+        [PostgresPositionRepo] <<Adapter>> #FFE0B2
+        [PostgresDecisionCycleRepo] <<Adapter>> #FFE0B2
+        [PostgresTradeRepo] <<Adapter>> #FFE0B2
+        [AsyncEventBus] <<Adapter>> #FFE0B2
     }
 
-    HLExchange .up.|> IExchange
+    HyperliquidAccountAdapter .up.|> IAccount
+    HyperliquidPositionAdapter .up.|> IPosition
+    HyperliquidOrderAdapter .up.|> IOrder
     HLMarket .up.|> IMarket
     LLMClient .up.|> ILLM
-    PGRepo .up.|> IRepo
+    PostgresTraderRepo .up.|> ITraderRepo
+    PostgresPositionRepo .up.|> IPositionRepo
+    PostgresDecisionCycleRepo .up.|> IDecisionRepo
+    PostgresTradeRepo .up.|> ITradeRepo
+    AsyncEventBus .up.|> EventBus
 
     note bottom of HLMarket
       <b>With caching layer</b>
-      • TTL-based snapshot cache
+      • TTL-based snapshot cache (5s)
       • Symbol universe cache
+      • Transparent to domain
     end note
 
-    note bottom of PGRepo
+    note bottom of PostgresTraderRepo
       <b>With caching layer</b>
       • go-zero cache integration
       • State snapshot cache
+      • Invalidation on updates
+    end note
+
+    note bottom of AsyncEventBus
+      <b>Event Bus Implementation</b>
+      • Goroutine-based async dispatch
+      • Channel buffering
+      • Error handling & retries
     end note
 }
 
@@ -205,15 +272,23 @@ package "Infrastructure Layer" #FAFAFA {
 ' ==============================================================================
 
 ' Application -> Domain
-ManagerService -down-> Trader
-ManagerService -down-> Executor
-RiskRunner -down-> Trader
+DecisionOrchestrator -down-> Trader
+DecisionOrchestrator -down-> Executor
+DecisionOrchestrator -down-> GuardChain
+DecisionOrchestrator -down-> EventBus
+TraderLifecycleManager -down-> Trader
+TraderLifecycleManager -down-> ITraderRepo
+RiskMonitor -down-> Trader
+RiskMonitor -down-> EventBus
 
 ' Domain -> Ports (Dependency Inversion)
-Trader -down-> IExchange
+Trader -down-> IAccount
+Trader -down-> IPosition
+Trader -down-> IOrder
 Trader -down-> IMarket
-Trader -down-> IRepo
+Trader -down-> ITraderRepo
 Executor -down-> ILLM
+GuardChain -down-> IRiskGuard
 
 ' Domain Internal
 Trader -right-> Context : builds
@@ -222,12 +297,18 @@ Context -up-> Asset : includes
 Trader -down-> Decision : executes
 Trader -down-> DecisionCycle : records
 Trader -down-> Trade : records
+Trader -down-> DomainEvent : publishes
 
 ' Adapters -> External
-HLExchange -up-> EXCHANGE_EXTERNAL
+HyperliquidAccountAdapter -up-> EXCHANGE_EXTERNAL
+HyperliquidPositionAdapter -up-> EXCHANGE_EXTERNAL
+HyperliquidOrderAdapter -up-> EXCHANGE_EXTERNAL
 HLMarket -up-> EXCHANGE_EXTERNAL
 LLMClient -up-> LLM_EXTERNAL
-PGRepo -up-> DB_EXTERNAL
+PostgresTraderRepo -up-> DB_EXTERNAL
+PostgresPositionRepo -up-> DB_EXTERNAL
+PostgresDecisionCycleRepo -up-> DB_EXTERNAL
+PostgresTradeRepo -up-> DB_EXTERNAL
 
 ' ==============================================================================
 ' ARCHITECTURE SUMMARY
@@ -239,10 +320,12 @@ note as ArchPrinciples
   <b>1. DDD</b> - Trader as Aggregate Root
      • Encapsulates runtime state
      • Protects invariants
+     ✅ Repository per aggregate
 
   <b>2. Hexagonal</b> - Ports isolate domain
      • Domain depends on interfaces
      • Adapters implement externals
+     ✅ Interface segregation (ISP)
 
   <b>3. Dependency Inversion</b>
      • Domain → Abstractions (Ports)
@@ -250,11 +333,25 @@ note as ArchPrinciples
 
   <b>4. Event Sourcing</b>
      • Immutable audit log
-     • DecisionCycle + Trade entities
+     • DecisionCycle + Trade events
+     • Event bus for async processing
 
   <b>5. Caching Strategy</b>
      • Transparent to domain
      • Implemented in adapters
+     • Multi-level (L1 + L2)
+
+  <b>6. Single Responsibility</b>
+     ✅ DecisionOrchestrator: Decision flow
+     ✅ TraderLifecycleManager: State management
+     ✅ RiskMonitor: Risk monitoring
+
+  <b>✅ P0 Refactoring Completed</b>:
+  • ManagerService split into 3 services
+  • Repository split by aggregate root
+  • IExchangeProvider split into focused interfaces
+  • Event bus introduced for async processing
+  • RiskGuard abstraction with chain pattern
 end note
 
 @enduml
